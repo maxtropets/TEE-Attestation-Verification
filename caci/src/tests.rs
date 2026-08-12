@@ -201,7 +201,8 @@ mod synchronous {
                 &reference_info_fixture(fixture),
                 TRUSTED_ACI_DIDX509,
             )
-            .unwrap();
+            .unwrap()
+            .into_owned();
 
             let report_data = crate::synchronous::verify_caci_attestation(
                 report,
@@ -384,7 +385,7 @@ mod asynchronous {
         attestation: AttestationReport,
         minimum_tcb: Vec<(snp::Cpuid, TcbVersionRaw)>,
         trusted_caci_execution_policy: Vec<[u8; SNP_HOST_DATA_LEN]>,
-        uvm_endorsement: &CborValue,
+        uvm_endorsement: &CborValue<'_>,
         uvm_feed: &str,
         minimum_svn: u64,
     ) -> Result<[u8; SNP_REPORT_DATA_LEN], AciError> {
@@ -556,7 +557,8 @@ mod asynchronous {
                 TRUSTED_ACI_DIDX509,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .into_owned();
 
             let report_data = verify_caci_attestation(
                 report,
@@ -960,13 +962,13 @@ fn measurement_hex_upper(report: AttestationReport) -> String {
     crypto::hex::to_hex(&report.measurement).to_uppercase()
 }
 
-fn endorsement_protected_header(endorsement: &CborValue) -> CborValue {
+fn endorsement_protected_header(endorsement: &CborValue<'_>) -> CborValue<'static> {
     let sign1 = cose::cose_sign1(endorsement).unwrap();
     let protected = parse::required_bstr(sign1.array_at(0).unwrap(), "protected").unwrap();
-    CborValue::from_bytes(&protected).unwrap()
+    CborValue::parse_nondet(&protected).unwrap().into_owned()
 }
 
-fn endorsement_payload(endorsement: &CborValue) -> serde_json::Value {
+fn endorsement_payload(endorsement: &CborValue<'_>) -> serde_json::Value {
     let sign1 = cose::cose_sign1(endorsement).unwrap();
     let payload = parse::cose_payload(sign1).unwrap();
     let protected_header = endorsement_protected_header(endorsement);
@@ -981,26 +983,26 @@ fn endorsement_payload(endorsement: &CborValue) -> serde_json::Value {
     serde_json::from_slice(&payload).unwrap()
 }
 
-fn replace_cose_payload(mut endorsement: CborValue, payload: Vec<u8>) -> CborValue {
-    sign1_items_mut(&mut endorsement)[2] = CborValue::ByteString(payload);
+fn replace_cose_payload<'a>(mut endorsement: CborValue<'a>, payload: Vec<u8>) -> CborValue<'a> {
+    sign1_items_mut(&mut endorsement)[2] = CborValue::bytes(payload);
     endorsement
 }
 
-fn replace_cose_feed(mut endorsement: CborValue, feed: &str) -> CborValue {
+fn replace_cose_feed<'a>(mut endorsement: CborValue<'a>, feed: &str) -> CborValue<'a> {
     let protected = match &sign1_items_mut(&mut endorsement)[0] {
-        CborValue::ByteString(protected) => protected.clone(),
+        CborValue::ByteString(protected) => protected.to_vec(),
         other => panic!("expected protected header byte string, got {other:?}"),
     };
-    let mut protected_header = CborValue::from_bytes(&protected).unwrap();
+    let mut protected_header = CborValue::parse_nondet(&protected).unwrap();
     let protected_entries = match &mut protected_header {
         CborValue::Map(entries) => entries,
         other => panic!("expected protected header map, got {other:?}"),
     };
     if let Some((_, feed_claim)) = protected_entries
         .iter_mut()
-        .find(|(key, _)| key == &CborValue::TextString("feed".to_string()))
+        .find(|(key, _)| key == &CborValue::text("feed"))
     {
-        *feed_claim = CborValue::TextString(feed.to_string());
+        *feed_claim = CborValue::text(feed);
     } else {
         let cwt_claims = protected_entries
             .iter_mut()
@@ -1016,15 +1018,15 @@ fn replace_cose_feed(mut endorsement: CborValue, feed: &str) -> CborValue {
             .find(|(key, _)| key == &CborValue::Int(cose::CWT_CLAIMS_SUBJECT))
             .map(|(_, value)| value)
             .expect("CWT sub claim should be present");
-        *subject_claim = CborValue::TextString(feed.to_string());
+        *subject_claim = CborValue::text(feed);
     }
     sign1_items_mut(&mut endorsement)[0] =
-        CborValue::ByteString(protected_header.to_bytes().unwrap());
+        CborValue::bytes(protected_header.to_bytes_det().unwrap());
 
     endorsement
 }
 
-fn sign1_items_mut(endorsement: &mut CborValue) -> &mut Vec<CborValue> {
+fn sign1_items_mut<'a, 'b>(endorsement: &'a mut CborValue<'b>) -> &'a mut Vec<CborValue<'b>> {
     match endorsement {
         CborValue::Tagged { payload, .. } => match payload.as_mut() {
             CborValue::Array(items) => items,

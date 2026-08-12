@@ -9,7 +9,10 @@
 
 use std::sync::Arc;
 
-use cose::CborValue as NativeCborValue;
+use cose::CborValue;
+
+/// A document detached from any input buffer, so the view can own it.
+pub(crate) type NativeCborValue = CborValue<'static>;
 
 #[derive(Clone)]
 pub struct CborView {

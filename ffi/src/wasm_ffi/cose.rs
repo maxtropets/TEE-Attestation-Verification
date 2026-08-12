@@ -6,7 +6,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
 use crate::cbor_view::CborView;
-use cose::{signature_key_algorithm_for_cose_alg, CborValue as NativeCborValue};
+use cose::signature_key_algorithm_for_cose_alg;
+
+use crate::cbor_view::NativeCborValue;
 use crypto::{AsyncCryptoBackend, AsyncKeyBackend};
 
 /// JavaScript wrapper around an independently owned immutable CBOR view.
@@ -36,12 +38,12 @@ impl CborValue {
 impl CborValue {
     /// Parse a CBOR document from bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<CborValue, String> {
-        NativeCborValue::from_bytes(bytes).map(CborValue::from_native)
+        cose::CborValue::parse_nondet(bytes).map(|value| CborValue::from_native(value.into_owned()))
     }
 
     /// Serialize this value as deterministic CBOR bytes.
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
-        self.as_native().to_bytes()
+        self.as_native().to_bytes_det()
     }
 
     /// Return the CBOR major type represented by this value.
@@ -74,14 +76,14 @@ impl CborValue {
 
     pub fn bytes(&self) -> Result<Vec<u8>, String> {
         match self.as_native() {
-            NativeCborValue::ByteString(value) => Ok(value.clone()),
+            NativeCborValue::ByteString(value) => Ok(value.to_vec()),
             other => Err(format!("Expected ByteString, got {:?}", other)),
         }
     }
 
     pub fn text(&self) -> Result<String, String> {
         match self.as_native() {
-            NativeCborValue::TextString(value) => Ok(value.clone()),
+            NativeCborValue::TextString(value) => Ok(value.to_string()),
             other => Err(format!("Expected TextString, got {:?}", other)),
         }
     }
@@ -214,7 +216,8 @@ impl CoseSign1 {
 
     pub fn protected_header(&self) -> Result<CborValue, String> {
         let protected = borrowed_bytes(self.as_native().array_at(0)?, "protected")?;
-        NativeCborValue::from_bytes(protected).map(CborValue::from_native)
+        cose::CborValue::parse_nondet(protected)
+            .map(|value| CborValue::from_native(value.into_owned()))
     }
 }
 
@@ -319,10 +322,10 @@ fn borrowed_bytes<'a>(value: &'a NativeCborValue, name: &str) -> Result<&'a [u8]
     }
 }
 
-fn map_entry_at(
-    value: &NativeCborValue,
+fn map_entry_at<'a>(
+    value: &'a NativeCborValue,
     index: u32,
-) -> Result<(&NativeCborValue, &NativeCborValue), String> {
+) -> Result<(&'a NativeCborValue, &'a NativeCborValue), String> {
     match value {
         NativeCborValue::Map(entries) => entries
             .get(index as usize)

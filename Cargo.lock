@@ -1048,11 +1048,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "tee-attestation-verification-cose"
+name = "tee-attestation-verification-cbor"
 version = "1.0.7"
 dependencies = [
  "cborrs",
  "cborrs-nondet",
+]
+
+[[package]]
+name = "tee-attestation-verification-cose"
+version = "1.0.7"
+dependencies = [
+ "tee-attestation-verification-cbor",
  "tee-attestation-verification-crypto",
 ]
 

@@ -53,7 +53,8 @@ pub async fn verify_uvm_endorsement_async(
 ) -> Result<WasmCborValue, String> {
     let inner = asynchronous::verify_uvm_endorsement(&uvm_endorsement, trusted_didx509)
         .await
-        .map_err(wasm_error)?;
+        .map_err(wasm_error)?
+        .into_owned();
     Ok(WasmCborValue::from_native(inner))
 }
 
