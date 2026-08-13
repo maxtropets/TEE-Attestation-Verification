@@ -21,8 +21,9 @@ pub struct CborView {
 }
 
 impl CborView {
-    pub(crate) fn new(value: NativeCborValue) -> Self {
-        let document = Arc::new(value);
+    /// Detaches `value` from any input buffer, which a view outlives.
+    pub(crate) fn new(value: CborValue<'_>) -> Self {
+        let document = Arc::new(value.into_owned());
         let node = Arc::as_ptr(&document);
         Self { document, node }
     }

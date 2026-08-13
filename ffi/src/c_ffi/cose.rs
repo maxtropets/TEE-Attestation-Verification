@@ -123,10 +123,10 @@ fn sign1_field<'a>(
     })
 }
 
-fn map_entry_at<'a>(
-    value: &'a NativeCborValue,
+fn map_entry_at(
+    value: &NativeCborValue,
     index: usize,
-) -> Result<(&'a NativeCborValue, &'a NativeCborValue), TavError> {
+) -> Result<(&NativeCborValue, &NativeCborValue), TavError> {
     match value {
         NativeCborValue::Map(entries) => entries
             .get(index)
@@ -154,8 +154,7 @@ pub unsafe extern "C" fn tav_cbor_value_from_bytes(
         unsafe { owned_out_ptr(out_value, "out_value") }?;
         let bytes = unsafe { input_bytes(bytes, len, "CBOR bytes", false) }?;
         let value = cose::CborValue::parse_nondet(bytes)
-            .map_err(|error| TavError::new(TavErrorCode::CoseCbor, error))?
-            .into_owned();
+            .map_err(|error| TavError::new(TavErrorCode::CoseCbor, error))?;
         unsafe {
             *out_value = into_raw(CborView::new(value));
         }
