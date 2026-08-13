@@ -229,6 +229,73 @@ fn to_bytes_rejects_excessive_tag_nesting() {
     assert!(err.contains("Maximum CBOR nesting depth"));
 }
 
+/// An empty container has no children to descend into, so it costs no depth.
+#[test]
+fn empty_containers_do_not_spend_depth() {
+    for document in [&[0x80u8][..], &[0xa0][..]] {
+        assert!(
+            CborValue::parse_with_depth::<Nondet>(document, 0).is_ok(),
+            "empty container should fit depth 0: {document:02x?}"
+        );
+    }
+    for value in [CborValue::Array(vec![]), CborValue::Map(vec![])] {
+        assert!(value.to_bytes_with_depth::<Det>(0).is_ok());
+    }
+
+    // A single child needs one level of budget.
+    let one_item: &[u8] = &[0x81, 0x01];
+    assert!(CborValue::parse_with_depth::<Nondet>(one_item, 0).is_err());
+    assert!(CborValue::parse_with_depth::<Nondet>(one_item, 1).is_ok());
+
+    // A tag always has a payload, so it always spends a level.
+    let tagged: &[u8] = &[0xc1, 0x01];
+    assert!(CborValue::parse_with_depth::<Nondet>(tagged, 0).is_err());
+    assert!(CborValue::parse_with_depth::<Nondet>(tagged, 1).is_ok());
+}
+
+/// Scalars sit at depth 0, matching the documented root-at-zero semantics.
+#[test]
+fn scalars_fit_the_smallest_depth() {
+    for document in [&[0x01u8][..], &[0x40][..], &[0x60][..], &[0xf5][..]] {
+        assert!(CborValue::parse_with_depth::<Nondet>(document, 0).is_ok());
+    }
+}
+
+/// Well-formed integers outside `i64` are rejected, in both modes.
+#[test]
+fn integers_outside_i64_are_rejected_in_both_modes() {
+    let documents: [&[u8]; 2] = [
+        &[0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], // 2^64 - 1
+        &[0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], // -2^64
+    ];
+    for document in documents {
+        for error in [
+            CborValue::parse_nondet(document).expect_err("nondet should reject"),
+            CborValue::parse_det(document).expect_err("det should reject"),
+        ] {
+            assert!(error.contains("exceeds i64 range"), "{error}");
+        }
+    }
+
+    // The largest and smallest values that do fit are still accepted.
+    let max: &[u8] = &[0x1b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+    let min: &[u8] = &[0x3b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+    assert_eq!(CborValue::parse_det(max).unwrap(), CborValue::Int(i64::MAX));
+    assert_eq!(CborValue::parse_det(min).unwrap(), CborValue::Int(i64::MIN));
+}
+
+/// A container header can declare a length far larger than the input supplies.
+#[test]
+fn oversized_declared_lengths_are_rejected_not_reserved() {
+    // Array header claiming 2^64 - 1 items, with none following.
+    let document: &[u8] = &[0x9b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+    assert!(CborValue::parse_nondet(document).is_err());
+
+    // Byte string header claiming 2^64 - 1 bytes, with none following.
+    let document: &[u8] = &[0x5b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+    assert!(CborValue::parse_nondet(document).is_err());
+}
+
 #[test]
 fn explicit_depth_limit_is_honoured() {
     // [[42]] needs a budget of 2: one for each array.

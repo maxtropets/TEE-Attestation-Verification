@@ -6,16 +6,18 @@
 //!
 //! Every entry point is parameterised by a [`Mode`].
 //!
-//! Parsing: [`Nondet`] accepts any well-formed definite-length encoding.
-//! [`Det`] additionally requires RFC 8949 Section 4.2.1 canonical form, so it
-//! rejects non-preferred head widths and map keys out of canonical order.
+//! Parsing: [`Nondet`] accepts well-formed definite-length encodings whose
+//! integers fit `i64`. [`Det`] additionally requires RFC 8949 Section 4.2.1
+//! canonical form, so it rejects non-preferred head widths and map keys out of
+//! canonical order.
 //!
 //! Serialization: the modes differ only in map entry order. [`Det`] sorts keys
 //! into canonical order, [`Nondet`] emits them as given. Both write preferred
 //! head widths, so all other bytes are identical.
 //!
 //! Both modes reject floating-point values, indefinite-length encodings,
-//! invalid UTF-8, and duplicate map keys.
+//! invalid UTF-8, duplicate map keys, and integers outside the range of
+//! `i64`.
 //!
 //! [`CborValue`] holds its byte and text payloads in [`Cow`], so parsing
 //! borrows: string payloads point into the input buffer, which must outlive
@@ -30,12 +32,23 @@ use std::borrow::Cow;
 /// Default maximum nesting depth for CBOR parse and serialization.
 ///
 /// Depth 0 is the root item. Containers (arrays, maps, and tags) increment the
-/// depth of their children. This prevents deeply nested untrusted inputs from
-/// exhausting the Rust call stack.
+/// depth of their children, so an empty container is depth 0 like any other
+/// leaf. This bounds the recursion depth reached while walking untrusted
+/// input.
 pub const MAX_CBOR_NESTING_DEPTH: usize = 64;
 
 /// Bound passed to EverCBOR's serialized-size estimator.
 const SIZE_BOUND: usize = usize::MAX;
+
+/// Number of child slots to reserve for a container of `declared` length.
+///
+/// Parsing has already rejected any container whose declared length is not
+/// backed by items present in the input, so this is bounded by the input
+/// length. A value too large for `usize` cannot be allocated, and is left to
+/// fail as the vector grows.
+fn reserve_for(declared: u64) -> usize {
+    usize::try_from(declared).unwrap_or(0)
+}
 
 /// Arena of `Box<[T]>` chunks holding EverCBOR child nodes.
 ///
@@ -106,7 +119,7 @@ pub trait Backend<'a>: Sized + Copy {
 }
 
 mod det_backend {
-    use super::{Backend, RawView, SimpleArena, SIZE_BOUND};
+    use super::{reserve_for, Backend, RawView, SimpleArena, SIZE_BOUND};
     use cborrs::cbordet as api;
 
     /// Serializes into a fresh buffer.
@@ -152,18 +165,22 @@ mod det_backend {
                 api::CborDetView::ByteString { payload } => RawView::ByteString(payload),
                 api::CborDetView::TextString { payload } => RawView::TextString(payload),
                 api::CborDetView::Array { _0: array } => {
-                    RawView::Array(array.into_iter().collect())
+                    let mut items =
+                        Vec::with_capacity(reserve_for(api::cbor_det_get_array_length(array)));
+                    items.extend(array);
+                    RawView::Array(items)
                 }
-                api::CborDetView::Map { _0: map } => RawView::Map(
-                    map.into_iter()
-                        .map(|e| {
-                            (
-                                api::cbor_det_map_entry_key(e),
-                                api::cbor_det_map_entry_value(e),
-                            )
-                        })
-                        .collect(),
-                ),
+                api::CborDetView::Map { _0: map } => {
+                    let mut entries =
+                        Vec::with_capacity(reserve_for(api::cbor_det_get_map_length(map)));
+                    entries.extend(map.into_iter().map(|e| {
+                        (
+                            api::cbor_det_map_entry_key(e),
+                            api::cbor_det_map_entry_value(e),
+                        )
+                    }));
+                    RawView::Map(entries)
+                }
                 api::CborDetView::Tagged { tag, payload } => RawView::Tagged { tag, payload },
                 api::CborDetView::SimpleValue { _0: value } => RawView::Simple(value),
             }
@@ -213,7 +230,7 @@ mod det_backend {
 }
 
 mod nondet_backend {
-    use super::{Backend, RawView, SimpleArena, SIZE_BOUND};
+    use super::{reserve_for, Backend, RawView, SimpleArena, SIZE_BOUND};
     use cborrs_nondet::cbornondet as api;
 
     /// See the deterministic counterpart for the note on the elided lifetime.
@@ -257,18 +274,22 @@ mod nondet_backend {
                 api::CborNondetView::ByteString { payload } => RawView::ByteString(payload),
                 api::CborNondetView::TextString { payload } => RawView::TextString(payload),
                 api::CborNondetView::Array { _0: array } => {
-                    RawView::Array(array.into_iter().collect())
+                    let mut items =
+                        Vec::with_capacity(reserve_for(api::cbor_nondet_get_array_length(array)));
+                    items.extend(array);
+                    RawView::Array(items)
                 }
-                api::CborNondetView::Map { _0: map } => RawView::Map(
-                    map.into_iter()
-                        .map(|e| {
-                            (
-                                api::cbor_nondet_map_entry_key(e),
-                                api::cbor_nondet_map_entry_value(e),
-                            )
-                        })
-                        .collect(),
-                ),
+                api::CborNondetView::Map { _0: map } => {
+                    let mut entries =
+                        Vec::with_capacity(reserve_for(api::cbor_nondet_get_map_length(map)));
+                    entries.extend(map.into_iter().map(|e| {
+                        (
+                            api::cbor_nondet_map_entry_key(e),
+                            api::cbor_nondet_map_entry_value(e),
+                        )
+                    }));
+                    RawView::Map(entries)
+                }
                 api::CborNondetView::Tagged { tag, payload } => RawView::Tagged { tag, payload },
                 api::CborNondetView::SimpleValue { _0: value } => RawView::Simple(value),
             }
@@ -451,6 +472,10 @@ impl<'a> CborValue<'a> {
     }
 
     /// Serialize preserving map entry order as given.
+    ///
+    /// Detecting duplicate keys without sorting takes time quadratic in the
+    /// number of map entries. [`CborValue::to_bytes_det`] sorts instead, and
+    /// is the cheaper choice for large maps.
     pub fn to_bytes_nondet(&self) -> Result<Vec<u8>, String> {
         self.to_bytes::<Nondet>()
     }
@@ -597,7 +622,14 @@ impl<'a> CborValue<'a> {
         }
     }
 
-    fn child_budget(budget: usize) -> Result<usize, String> {
+    /// Budget for the children of a container holding `child_count` of them.
+    ///
+    /// An empty container has no children to descend into, so it does not
+    /// spend any of the budget.
+    fn child_budget(budget: usize, child_count: usize) -> Result<usize, String> {
+        if child_count == 0 {
+            return Ok(budget);
+        }
         budget
             .checked_sub(1)
             .ok_or_else(|| "Maximum CBOR nesting depth exceeded".to_string())
@@ -613,7 +645,7 @@ impl<'a> CborValue<'a> {
             RawView::ByteString(payload) => CborValue::ByteString(Cow::Borrowed(payload)),
             RawView::TextString(payload) => CborValue::TextString(Cow::Borrowed(payload)),
             RawView::Array(children) => {
-                let child_budget = Self::child_budget(budget)?;
+                let child_budget = Self::child_budget(budget, children.len())?;
                 CborValue::Array(
                     children
                         .into_iter()
@@ -622,7 +654,7 @@ impl<'a> CborValue<'a> {
                 )
             }
             RawView::Map(children) => {
-                let child_budget = Self::child_budget(budget)?;
+                let child_budget = Self::child_budget(budget, children.len())?;
                 CborValue::Map(
                     children
                         .into_iter()
@@ -637,7 +669,10 @@ impl<'a> CborValue<'a> {
             }
             RawView::Tagged { tag, payload } => CborValue::Tagged {
                 tag,
-                payload: Box::new(Self::from_raw::<B>(payload, Self::child_budget(budget)?)?),
+                payload: Box::new(Self::from_raw::<B>(
+                    payload,
+                    Self::child_budget(budget, 1)?,
+                )?),
             },
         })
     }
@@ -668,7 +703,7 @@ impl<'a> CborValue<'a> {
                 B::mk_text(s.as_ref()).ok_or_else(|| "Failed to make CBOR text string".to_string())
             }
             CborValue::Array(children) => {
-                let child_budget = Self::child_budget(budget)?;
+                let child_budget = Self::child_budget(budget, children.len())?;
                 let raw: Vec<B> = children
                     .iter()
                     .map(|c| c.to_raw(items, entries, child_budget))
@@ -677,7 +712,7 @@ impl<'a> CborValue<'a> {
                     .ok_or_else(|| "Failed to build CBOR array".to_string())
             }
             CborValue::Map(map_entries) => {
-                let child_budget = Self::child_budget(budget)?;
+                let child_budget = Self::child_budget(budget, map_entries.len())?;
                 let raw: Vec<B::MapEntry> = map_entries
                     .iter()
                     .map(|(k, v)| {
@@ -691,7 +726,7 @@ impl<'a> CborValue<'a> {
                     .ok_or_else(|| "Failed to build CBOR map".to_string())
             }
             CborValue::Tagged { tag, payload } => {
-                let inner = payload.to_raw(items, entries, Self::child_budget(budget)?)?;
+                let inner = payload.to_raw(items, entries, Self::child_budget(budget, 1)?)?;
                 Ok(B::mk_tagged(*tag, items.alloc(inner)))
             }
         }
