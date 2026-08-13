@@ -75,6 +75,11 @@ jobs:
     needs: prepare_release
     uses: ./.github/workflows/ci-caci.yml
 
+  ci-cbor:
+    name: CBOR CI
+    needs: prepare_release
+    uses: ./.github/workflows/ci-cbor.yml
+
   ci-cose:
     name: COSE CI
     needs: prepare_release

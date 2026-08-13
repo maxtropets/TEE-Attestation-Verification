@@ -58,6 +58,22 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  workspace-tests:
+    name: Workspace tests
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install rust
+        run: |
+          rustup update stable && rustup default stable
+
+      # Per-crate jobs run each package against its own feature matrix. This
+      # runs every package once, so a crate whose tests no other job selects
+      # is still compiled and executed.
+      - name: Test workspace
+        run: cargo test --workspace -- --nocapture
+
   docs-build:
     name: Docs build
     runs-on: ubuntu-22.04
