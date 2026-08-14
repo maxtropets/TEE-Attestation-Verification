@@ -186,6 +186,7 @@ jobs:
       - ci
       - ci-attestation
       - ci-caci
+      - ci-cbor
       - ci-cose
       - ci-crypto
       - ci-demo
