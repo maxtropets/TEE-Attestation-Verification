@@ -3,17 +3,23 @@
 
 //! C ABI exposing CBOR values as a flat array of [`CborNode`] descriptors.
 //!
-//! A whole document crosses the boundary in one call. The caller may inspect
-//! the array, rebuild it with edits, and serialize it back, in either the
-//! deterministic (RFC 8949 Section 4.2.1) or non-deterministic definite-length
-//! mode.
+//! A whole document crosses the boundary in one call. The root is at index 0,
+//! and a container's direct children are contiguous, so navigate by following
+//! `first_child`. The caller may inspect the array, rebuild it with edits, and
+//! serialize it back, in either the deterministic (RFC 8949 Section 4.2.1) or
+//! non-deterministic definite-length mode.
 //!
-//! Nothing is copied in either direction. On parse, the `ptr`/`len` of byte and
-//! text nodes point into the caller's input buffer, which must outlive any use
-//! of the returned nodes. On serialize, they point into the caller's node
-//! array, which must stay live for the duration of the call.
+//! String payloads are never copied. On parse, the `ptr`/`len` of byte and text
+//! nodes point into the caller's input buffer, which must outlive any use of
+//! the returned nodes. On serialize, they point into caller-owned storage,
+//! which need not be the node array, and which must stay live for the duration
+//! of the call. The node array and the serialized buffer are themselves
+//! allocated by this crate and released through the `tav_cbor_*_free` calls.
 
 pub mod ffi;
+
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("cbor-ffi exchanges CborNode by layout, which is pinned to 64-bit targets");
 
 use std::borrow::Cow;
 
@@ -33,7 +39,12 @@ pub const STATUS_OK: i32 = 0;
 pub const STATUS_DECODE_FAILED: i32 = 1;
 pub const STATUS_ENCODE_FAILED: i32 = 2;
 
-/// A single CBOR item, as one element of a flat preorder array.
+/// Ceiling on the caller-supplied depth, bounding recursion depth so that a
+/// cyclic or deeply nested document cannot overflow the stack. Measured at
+/// roughly 2.4 KiB of stack per level in debug builds.
+pub const MAX_DEPTH_LIMIT: usize = 256;
+
+/// A single CBOR item, as one element of a flat indexed array.
 ///
 /// Mirrors `TavCborNode` in `include/tav/cbor.h`.
 ///
@@ -170,7 +181,7 @@ fn emit(value: &CborValue<'_>, out: &mut Vec<CborNode>, slot: usize) {
 
 /// Parse `input` into a flat node array, borrowing its string payloads.
 pub fn parse<M: Mode>(input: &[u8], max_depth: usize) -> Result<Vec<CborNode>, String> {
-    let value = CborValue::parse_with_depth::<M>(input, max_depth)?;
+    let value = CborValue::parse_with_depth::<M>(input, max_depth.min(MAX_DEPTH_LIMIT))?;
     let mut out = vec![CborNode::default()];
     emit(&value, &mut out, 0);
     Ok(out)
@@ -207,17 +218,24 @@ unsafe fn build<'a>(
         .ok_or_else(|| format!("Node index {index} out of bounds"))?;
 
     let child_count = match node.node_type {
-        CBOR_TYPE_ARRAY => node.value as usize,
-        CBOR_TYPE_MAP => 2 * node.value as usize,
+        CBOR_TYPE_ARRAY => usize::try_from(node.value).map_err(|_| "Child count out of range")?,
+        CBOR_TYPE_MAP => usize::try_from(node.value)
+            .ok()
+            .and_then(|count| count.checked_mul(2))
+            .ok_or("Child count out of range")?,
         CBOR_TYPE_TAGGED => 1,
         _ => 0,
     };
-    let children_end = node
-        .first_child
-        .checked_add(child_count)
-        .ok_or("Child range overflows")?;
-    if children_end > nodes.len() {
-        return Err("Child range out of bounds".to_string());
+    // first_child carries no meaning for a childless node, so a caller need
+    // not initialise it.
+    if child_count > 0 {
+        let children_end = node
+            .first_child
+            .checked_add(child_count)
+            .ok_or("Child range overflows")?;
+        if children_end > nodes.len() {
+            return Err("Child range out of bounds".to_string());
+        }
     }
 
     match node.node_type {
@@ -240,17 +258,16 @@ unsafe fn build<'a>(
             Ok(CborValue::TextString(Cow::Borrowed(text)))
         }
         CBOR_TYPE_ARRAY => {
-            let count = node.value as usize;
-            let mut items = Vec::with_capacity(count);
-            for i in 0..count {
+            let mut items = Vec::with_capacity(child_count);
+            for i in 0..child_count {
                 items.push(unsafe { build(nodes, node.first_child + i, depth + 1, max_depth)? });
             }
             Ok(CborValue::Array(items))
         }
         CBOR_TYPE_MAP => {
-            let count = node.value as usize;
-            let mut entries = Vec::with_capacity(count);
-            for i in 0..count {
+            let entry_count = child_count / 2;
+            let mut entries = Vec::with_capacity(entry_count);
+            for i in 0..entry_count {
                 let key = unsafe { build(nodes, node.first_child + 2 * i, depth + 1, max_depth)? };
                 let value =
                     unsafe { build(nodes, node.first_child + 2 * i + 1, depth + 1, max_depth)? };
@@ -271,6 +288,7 @@ unsafe fn build<'a>(
 /// # Safety
 /// String nodes must have valid `ptr`/`len` for the duration of the call.
 pub unsafe fn serialize<M: Mode>(nodes: &[CborNode], max_depth: usize) -> Result<Vec<u8>, String> {
+    let max_depth = max_depth.min(MAX_DEPTH_LIMIT);
     let value = unsafe { build(nodes, 0, 0, max_depth)? };
     value.to_bytes_with_depth::<M>(max_depth)
 }

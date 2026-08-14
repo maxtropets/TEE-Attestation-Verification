@@ -301,3 +301,86 @@ fn cbor_node_layout_is_pinned() {
     assert_eq!(offset_of!(CborNode, len), 24);
     assert_eq!(offset_of!(CborNode, first_child), 32);
 }
+
+#[test]
+fn childless_nodes_ignore_first_child() {
+    // first_child carries no meaning without children, so a caller may leave
+    // it uninitialised.
+    for node_type in [
+        CBOR_TYPE_INT,
+        CBOR_TYPE_SIMPLE,
+        CBOR_TYPE_BYTES,
+        CBOR_TYPE_TEXT,
+    ] {
+        let nodes = vec![CborNode {
+            node_type,
+            first_child: usize::MAX,
+            ..Default::default()
+        }];
+        assert!(
+            unsafe { serialize_nondet(&nodes, 16) }.is_ok(),
+            "type {node_type} should ignore first_child"
+        );
+    }
+
+    // Empty containers have no children either.
+    for node_type in [CBOR_TYPE_ARRAY, CBOR_TYPE_MAP] {
+        let nodes = vec![CborNode {
+            node_type,
+            value: 0,
+            first_child: usize::MAX,
+            ..Default::default()
+        }];
+        assert!(unsafe { serialize_nondet(&nodes, 16) }.is_ok());
+    }
+}
+
+#[test]
+fn oversized_child_counts_are_rejected_without_overflow() {
+    // 2 * value overflows usize for a map.
+    let nodes = vec![CborNode {
+        node_type: CBOR_TYPE_MAP,
+        value: u64::MAX,
+        first_child: 1,
+        ..Default::default()
+    }];
+    assert!(unsafe { serialize_nondet(&nodes, 16) }
+        .unwrap_err()
+        .contains("Child count out of range"));
+
+    // An array count that no node array can back.
+    let nodes = vec![CborNode {
+        node_type: CBOR_TYPE_ARRAY,
+        value: u64::MAX,
+        first_child: 1,
+        ..Default::default()
+    }];
+    assert!(unsafe { serialize_nondet(&nodes, 16) }
+        .unwrap_err()
+        .contains("Child range overflows"));
+
+    // A count that fits, but that the node array does not back.
+    let nodes = vec![CborNode {
+        node_type: CBOR_TYPE_ARRAY,
+        value: 4,
+        first_child: 1,
+        ..Default::default()
+    }];
+    assert!(unsafe { serialize_nondet(&nodes, 16) }
+        .unwrap_err()
+        .contains("out of bounds"));
+}
+
+#[test]
+fn depth_is_capped_regardless_of_the_requested_maximum() {
+    // An array whose only child is itself. Without a ceiling on the caller's
+    // max_depth this recurses until the stack overflows.
+    let nodes = vec![CborNode {
+        node_type: CBOR_TYPE_ARRAY,
+        value: 1,
+        first_child: 0,
+        ..Default::default()
+    }];
+    let err = unsafe { serialize_nondet(&nodes, usize::MAX) }.expect_err("cycle should fail");
+    assert!(err.contains(&MAX_DEPTH_LIMIT.to_string()), "{err}");
+}

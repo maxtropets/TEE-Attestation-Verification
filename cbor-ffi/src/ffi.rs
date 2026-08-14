@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! C ABI entry points. Nodes are exchanged as a flat preorder array; see
+//! C ABI entry points. Nodes are exchanged as a flat indexed array; see
 //! `include/tav/cbor.h` for the C declarations.
 //!
 //! Every entry point runs its body under [`std::panic::catch_unwind`], so a
@@ -18,8 +18,7 @@ unsafe fn set_error(msg: &str, err_ptr: *mut *mut u8, err_len: *mut usize) {
     if err_ptr.is_null() || err_len.is_null() {
         return;
     }
-    let mut bytes = msg.as_bytes().to_vec();
-    bytes.shrink_to_fit();
+    let mut bytes = msg.as_bytes().to_vec().into_boxed_slice();
     let len = bytes.len();
     let ptr = bytes.as_mut_ptr();
     std::mem::forget(bytes);
@@ -44,8 +43,8 @@ unsafe fn finish_parse(
     err_len: *mut usize,
 ) -> i32 {
     match result {
-        Ok(mut nodes) => {
-            nodes.shrink_to_fit();
+        Ok(nodes) => {
+            let mut nodes = nodes.into_boxed_slice();
             let len = nodes.len();
             let ptr = nodes.as_mut_ptr();
             std::mem::forget(nodes);
@@ -70,8 +69,8 @@ unsafe fn finish_serialize(
     err_len: *mut usize,
 ) -> i32 {
     match result {
-        Ok(mut bytes) => {
-            bytes.shrink_to_fit();
+        Ok(bytes) => {
+            let mut bytes = bytes.into_boxed_slice();
             let len = bytes.len();
             let ptr = bytes.as_mut_ptr();
             std::mem::forget(bytes);
@@ -228,7 +227,7 @@ pub unsafe extern "C" fn tav_cbor_nodes_free(ptr: *mut CborNode, len: usize) {
         return;
     }
     unsafe {
-        drop(Vec::from_raw_parts(ptr, len, len));
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
     }
 }
 
@@ -243,6 +242,6 @@ pub unsafe extern "C" fn tav_cbor_buffer_free(ptr: *mut u8, len: usize) {
         return;
     }
     unsafe {
-        drop(Vec::from_raw_parts(ptr, len, len));
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
     }
 }

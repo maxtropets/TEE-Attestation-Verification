@@ -15,16 +15,18 @@ extern "C" {
 /*
  * C ABI for bulk CBOR parsing and serialization.
  *
- * A whole document crosses the boundary in a single call, as a flat preorder
- * array of TavCborNode. The caller may inspect the array, rebuild it with
- * edits, and serialize it back, choosing deterministic or non-deterministic
- * mode per call.
+ * A whole document crosses the boundary in a single call, as a flat array of
+ * TavCborNode. The root is at index 0, and a container's direct children are
+ * contiguous, so navigate by following first_child rather than by walking the
+ * array in order. The caller may inspect the array, rebuild it with edits, and
+ * serialize it back, choosing deterministic or non-deterministic mode per call.
  *
  * Ownership and lifetime:
- * - Nothing is copied in either direction. On parse, the ptr/len of byte and
- *   text nodes point into the input buffer, which must outlive any use of the
- *   returned array. On serialize, they point into the caller's own storage,
- *   which must stay live for the duration of the call.
+ * - String payloads are never copied. On parse, the ptr/len of byte and text
+ *   nodes point into the input buffer, which must outlive any use of the
+ *   returned array. On serialize, they point into caller-owned storage, which
+ *   need not be the node array, and which must stay live for the duration of
+ *   the call.
  * - On success, a tav_cbor_parse_* call writes an array through
  *   out_ptr/out_len, to be released with tav_cbor_nodes_free.
  * - On success, a tav_cbor_serialize_* call writes a buffer through
@@ -73,7 +75,7 @@ typedef enum TavCborNodeType
 } TavCborNodeType;
 
 /*
- * A single CBOR item, as one element of a flat preorder array.
+ * A single CBOR item, as one element of a flat indexed array.
  *
  * The root is at index 0. Children of a container occupy
  * [first_child, first_child + value) of the same array and are contiguous.

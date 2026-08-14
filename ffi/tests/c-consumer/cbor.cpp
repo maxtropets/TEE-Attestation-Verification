@@ -40,6 +40,13 @@ struct Nodes {
     Nodes& operator=(const Nodes&) = delete;
     ~Nodes() { tav_cbor_nodes_free(ptr, len); }
 
+    // Release any current allocation before the ABI overwrites the fields.
+    void reset() {
+        tav_cbor_nodes_free(ptr, len);
+        ptr = nullptr;
+        len = 0;
+    }
+
     const TavCborNode& operator[](size_t index) const {
         REQUIRE(index < len);
         return ptr[index];
@@ -56,30 +63,55 @@ struct Buffer {
     Buffer& operator=(const Buffer&) = delete;
     ~Buffer() { tav_cbor_buffer_free(ptr, len); }
 
-    std::vector<uint8_t> bytes() const { return std::vector<uint8_t>(ptr, ptr + len); }
-    std::string text() const { return std::string(reinterpret_cast<const char*>(ptr), len); }
+    // Release any current allocation before the ABI overwrites the fields.
+    void reset() {
+        tav_cbor_buffer_free(ptr, len);
+        ptr = nullptr;
+        len = 0;
+    }
+
+    std::vector<uint8_t> bytes() const {
+        if (ptr == nullptr) {
+            return {};
+        }
+        return std::vector<uint8_t>(ptr, ptr + len);
+    }
+    std::string text() const {
+        if (ptr == nullptr) {
+            return {};
+        }
+        return std::string(reinterpret_cast<const char*>(ptr), len);
+    }
 };
 
 int parse_nondet(const std::vector<uint8_t>& input, Nodes& nodes, Buffer& err,
                  size_t max_depth = kMaxDepth) {
+    nodes.reset();
+    err.reset();
     return tav_cbor_parse_nondet(input.data(), input.size(), max_depth, &nodes.ptr, &nodes.len,
                                  &err.ptr, &err.len);
 }
 
 int parse_det(const std::vector<uint8_t>& input, Nodes& nodes, Buffer& err,
               size_t max_depth = kMaxDepth) {
+    nodes.reset();
+    err.reset();
     return tav_cbor_parse_det(input.data(), input.size(), max_depth, &nodes.ptr, &nodes.len,
                               &err.ptr, &err.len);
 }
 
 int serialize_nondet(const std::vector<TavCborNode>& nodes, Buffer& out, Buffer& err,
                      size_t max_depth = kMaxDepth) {
+    out.reset();
+    err.reset();
     return tav_cbor_serialize_nondet(nodes.data(), nodes.size(), max_depth, &out.ptr, &out.len,
                                      &err.ptr, &err.len);
 }
 
 int serialize_det(const std::vector<TavCborNode>& nodes, Buffer& out, Buffer& err,
                   size_t max_depth = kMaxDepth) {
+    out.reset();
+    err.reset();
     return tav_cbor_serialize_det(nodes.data(), nodes.size(), max_depth, &out.ptr, &out.len,
                                   &err.ptr, &err.len);
 }
@@ -91,7 +123,7 @@ std::vector<TavCborNode> copy_of(const Nodes& nodes) {
 
 } // namespace
 
-TEST_CASE("cbor C ABI: parse yields a preorder array with contiguous children") {
+TEST_CASE("cbor C ABI: parse yields an indexed array with contiguous children") {
     // [1, "hi", h'0102']
     const std::vector<uint8_t> input = {0x83, 0x01, 0x62, 0x68, 0x69, 0x42, 0x01, 0x02};
     Nodes nodes;
@@ -108,11 +140,43 @@ TEST_CASE("cbor C ABI: parse yields a preorder array with contiguous children") 
     CHECK(nodes[first].value == 1);
 
     CHECK(nodes[first + 1].node_type == TAV_CBOR_NODE_TEXT);
-    CHECK(nodes[first + 1].len == 2);
+    REQUIRE(nodes[first + 1].len == 2);
+    REQUIRE(nodes[first + 1].ptr != nullptr);
     CHECK(std::memcmp(nodes[first + 1].ptr, "hi", 2) == 0);
 
     CHECK(nodes[first + 2].node_type == TAV_CBOR_NODE_BYTES);
     CHECK(nodes[first + 2].len == 2);
+}
+
+TEST_CASE("cbor C ABI: a nested container does not displace its parent's siblings") {
+    // [[1], 2]. A plain recursive preorder walk would emit the grandchild
+    // into slot 2, so the root's second child would read 1 instead of 2.
+    const std::vector<uint8_t> input = {0x82, 0x81, 0x01, 0x02};
+    Nodes nodes;
+    Buffer err;
+    REQUIRE(parse_nondet(input, nodes, err) == TAV_CBOR_OK);
+    REQUIRE(nodes.len == 4);
+
+    REQUIRE(nodes[0].node_type == TAV_CBOR_NODE_ARRAY);
+    REQUIRE(nodes[0].value == 2);
+    const size_t first = nodes[0].first_child;
+
+    // The root's two children are adjacent, with the grandchild elsewhere.
+    REQUIRE(nodes[first].node_type == TAV_CBOR_NODE_ARRAY);
+    CHECK(nodes[first].value == 1);
+    CHECK(nodes[first + 1].node_type == TAV_CBOR_NODE_INT);
+    CHECK(nodes[first + 1].value == 2);
+
+    const size_t grandchild = nodes[first].first_child;
+    CHECK(grandchild != first + 1);
+    CHECK(nodes[grandchild].node_type == TAV_CBOR_NODE_INT);
+    CHECK(nodes[grandchild].value == 1);
+
+    Buffer out;
+    Buffer out_err;
+    const std::vector<TavCborNode> owned = copy_of(nodes);
+    REQUIRE(serialize_nondet(owned, out, out_err) == TAV_CBOR_OK);
+    CHECK(out.bytes() == input);
 }
 
 TEST_CASE("cbor C ABI: string nodes borrow the caller's buffer") {
@@ -321,6 +385,57 @@ TEST_CASE("cbor C ABI: output parameters are untouched on failure") {
     CHECK(out_ptr == sentinel);
     CHECK(out_len == 12345);
     CHECK(err.len > 0);
+
+    // The same guarantee on the serialization path.
+    std::vector<TavCborNode> bad(1);
+    bad[0].node_type = 42;
+    uint8_t* const buf_sentinel = reinterpret_cast<uint8_t*>(0x1);
+    uint8_t* buf_ptr = buf_sentinel;
+    size_t buf_len = 54321;
+    Buffer serr;
+    CHECK(tav_cbor_serialize_nondet(bad.data(), bad.size(), kMaxDepth, &buf_ptr, &buf_len,
+                                    &serr.ptr, &serr.len) == TAV_CBOR_ENCODE_FAILED);
+    CHECK(buf_ptr == buf_sentinel);
+    CHECK(buf_len == 54321);
+    CHECK(serr.len > 0);
+}
+
+TEST_CASE("cbor C ABI: copied descriptors outlive the parsed array") {
+    // The node array is this crate's allocation, but string payloads point at
+    // the caller's input. Copied descriptors stay usable once the array is
+    // gone, provided the input is still alive.
+    std::vector<uint8_t> input = {0x82, 0x62, 0x68, 0x69, 0x42, 0x01, 0x02};
+    std::vector<TavCborNode> owned;
+    {
+        Nodes nodes;
+        Buffer err;
+        REQUIRE(parse_nondet(input, nodes, err) == TAV_CBOR_OK);
+        owned = copy_of(nodes);
+    } // nodes freed here; owned still points into input
+
+    // Mutate the input through the descriptors' own borrow.
+    input[2] = 0x48; // 'h' -> 'H'
+    input[5] = 0xaa;
+
+    Buffer out;
+    Buffer err;
+    REQUIRE(serialize_nondet(owned, out, err) == TAV_CBOR_OK);
+    const std::vector<uint8_t> expected = {0x82, 0x62, 0x48, 0x69, 0x42, 0xaa, 0x02};
+    CHECK(out.bytes() == expected);
+}
+
+TEST_CASE("cbor C ABI: a childless node ignores first_child") {
+    // first_child is meaningless without children, so a caller need not
+    // initialise it.
+    std::vector<TavCborNode> nodes(1);
+    nodes[0].node_type = TAV_CBOR_NODE_INT;
+    nodes[0].value = 7;
+    nodes[0].first_child = 9999;
+
+    Buffer out;
+    Buffer err;
+    REQUIRE(serialize_nondet(nodes, out, err) == TAV_CBOR_OK);
+    CHECK(out.bytes() == std::vector<uint8_t>{0x07});
 }
 
 TEST_CASE("cbor C ABI: freeing NULL is a no-op") {

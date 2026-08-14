@@ -12,7 +12,7 @@ The CBOR/COSE coverage exercises independently owned direct and nested child
 views, validated COSE_Sign1 views, parent-first freeing, and failure
 out-parameters.
 
-The bulk CBOR coverage exercises the flat preorder node array and its child
+The bulk CBOR coverage exercises the flat node array and its child
 indexing, zero-copy string payloads, the `-1-n` magnitude convention for
 negative integers, deterministic and non-deterministic parsing and
 serialization, depth limits, and child-index validation.
