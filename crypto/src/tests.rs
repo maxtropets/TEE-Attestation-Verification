@@ -4,6 +4,9 @@
 use crate::{Certificate, CertificateBackend, Crypto, DigestAlgorithm};
 use std::time::Duration;
 
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test;
+
 const MILAN_ARK: &[u8] = include_bytes!("test_data/milan_ark.pem");
 const MILAN_ASK: &[u8] = include_bytes!("test_data/milan_ask.pem");
 const MILAN_VCEK: &[u8] = include_bytes!("test_data/milan_vcek.pem");
@@ -260,6 +263,40 @@ fn certificate_parse_and_encode_wrappers_round_trip() {
     );
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+fn mismatched_pem_boundaries_are_rejected() {
+    let fixture = std::str::from_utf8(MILAN_ARK).expect("certificate PEM should be UTF-8");
+
+    for (begin, end) in [
+        ("CERTIFICATE", "X509 CERTIFICATE"),
+        ("X509 CERTIFICATE", "CERTIFICATE"),
+    ] {
+        let pem = fixture
+            .replace("BEGIN CERTIFICATE", &format!("BEGIN {begin}"))
+            .replace("END CERTIFICATE", &format!("END {end}"));
+        Crypto::from_pem_chain(pem.as_bytes())
+            .expect_err("mismatched PEM boundaries must be rejected");
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+fn certificate_extension_lookup_returns_native_value_bytes() {
+    let vcek = cert(MILAN_VCEK);
+
+    assert_eq!(
+        Crypto::get_extension_value_by_oid(&vcek, "1.3.6.1.4.1.3704.1.3.1")
+            .expect("BootLoader OID lookup should succeed"),
+        Some(vec![0x02, 0x01, 0x04])
+    );
+    assert_eq!(
+        Crypto::get_extension_value_by_oid(&vcek, "1.2.3.4.5.6.7.8.9")
+            .expect("Missing OID lookup should succeed"),
+        None
+    );
+}
+
 #[test]
 fn certificate_parse_wrappers_reject_invalid_input() {
     let malformed_pem = b"-----BEGIN CERTIFICATE-----\nnot-base64\n-----END CERTIFICATE-----\n";
@@ -422,6 +459,45 @@ mod async_tests {
                     .await
                     .expect("digest should work"),
                 expected
+            );
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    async fn digest_matches_rustcrypto_on_random_data() {
+        use rand::{rngs::OsRng, rngs::StdRng, Rng, RngCore, SeedableRng};
+        use sha2::{Digest, Sha256, Sha384, Sha512};
+
+        let seed = OsRng.next_u64();
+        eprintln!("digest random seed: {seed:#018x}");
+        let mut random = StdRng::seed_from_u64(seed);
+
+        for _ in 0..1024 {
+            let max_len = 1usize << random.gen_range(0..=13);
+            let mut data = vec![0; random.gen_range(0..=max_len)];
+            random.fill_bytes(&mut data);
+
+            assert_eq!(
+                <Crypto as AsyncCryptoBackend>::digest(DigestAlgorithm::Sha256, &data)
+                    .await
+                    .expect("SHA-256 should work"),
+                Sha256::digest(&data).to_vec(),
+                "SHA-256 mismatch with seed {seed:#018x}"
+            );
+            assert_eq!(
+                <Crypto as AsyncCryptoBackend>::digest(DigestAlgorithm::Sha384, &data)
+                    .await
+                    .expect("SHA-384 should work"),
+                Sha384::digest(&data).to_vec(),
+                "SHA-384 mismatch with seed {seed:#018x}"
+            );
+            assert_eq!(
+                <Crypto as AsyncCryptoBackend>::digest(DigestAlgorithm::Sha512, &data)
+                    .await
+                    .expect("SHA-512 should work"),
+                Sha512::digest(&data).to_vec(),
+                "SHA-512 mismatch with seed {seed:#018x}"
             );
         }
     }

@@ -2,7 +2,7 @@
 name = "tee-attestation-verification-crypto"
 version = "1.0.7"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.85"
 repository = "https://github.com/microsoft/TEE-Attestation-Verification"
 keywords = ["confidentiality", "sev-snp", "tpm"]
 description = "Cryptographic backends for TEE attestation verification"
@@ -12,7 +12,7 @@ links = "tav_crypto"
 
 [features]
 default = ["crypto_openssl", "crypto_webcrypto"]
-crypto_openssl = ["dep:foreign-types", "dep:openssl", "dep:openssl-sys"]
+crypto_openssl = ["dep:foreign-types-shared", "dep:openssl", "dep:openssl-sys"]
 crypto_pure_rust = [
     "dep:ecdsa",
     "dep:p256",
@@ -25,9 +25,10 @@ crypto_pure_rust = [
     "dep:x509-cert",
 ]
 crypto_webcrypto = ["dep:pkcs1", "dep:x509-cert"]
+crypto_windows = ["dep:windows"]
 
 [dependencies]
-foreign-types = { version = "0.3", optional = true }
+foreign-types-shared = { version = "0.1", optional = true }
 ecdsa = { version = "0.17", features = ["der"], default-features = false, optional = true }
 p256 = { version = "0.14", features = ["ecdsa", "pkcs8"], default-features = false, optional = true }
 p384 = { version = "0.14", features = ["ecdsa", "pkcs8"], default-features = false, optional = true }
@@ -42,12 +43,22 @@ x509-cert = { version = "0.2", optional = true }
 openssl = { version = "0.10", optional = true }
 openssl-sys = { version = "0.9", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+# 0.61 supports the workspace MSRV while exposing the required Crypt32 and CNG APIs.
+windows = { version = "0.61.3", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+] }
+
 [target.'cfg(target_family = "wasm")'.dependencies]
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+rand = "0.8"
+sha2 = { version = "0.11", features = ["oid"] }
 wasm-bindgen-test = "0.3"
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
