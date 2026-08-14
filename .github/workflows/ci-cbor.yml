@@ -30,6 +30,14 @@ jobs:
       - name: Test native
         run: cargo test --manifest-path cbor/Cargo.toml -- --nocapture
 
+      - name: Build FFI native
+        run: cargo build --manifest-path cbor-ffi/Cargo.toml
+
+      # Includes the tests that pin include/tav/cbor.h against the Rust
+      # constants and exported symbols.
+      - name: Test FFI native
+        run: cargo test --manifest-path cbor-ffi/Cargo.toml -- --nocapture
+
   wasm:
     name: WASM check
     runs-on: ubuntu-22.04

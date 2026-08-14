@@ -1,0 +1,16 @@
+[package]
+name = "tee-attestation-verification-cbor-ffi"
+version = "1.0.7"
+edition = "2021"
+rust-version = "1.77"
+repository = "https://github.com/microsoft/TEE-Attestation-Verification"
+keywords = ["cbor", "ffi", "confidentiality"]
+description = "C ABI exposing CBOR values as a flat node array"
+authors = ["Max Tropets", "Chris Jensen"]
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+cbor = { package = "tee-attestation-verification-cbor", version = "1.0.7", path = "../cbor" }

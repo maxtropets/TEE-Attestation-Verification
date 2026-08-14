@@ -22,12 +22,17 @@ if(TAV_LINK_STATIC)
     set(TAV_RUST_LIBRARY_KIND STATIC)
     set(TAV_RUST_LIBRARY_NAME
         "${CMAKE_STATIC_LIBRARY_PREFIX}tee_attestation_verification_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    set(TAV_CBOR_RUST_LIBRARY_NAME
+        "${CMAKE_STATIC_LIBRARY_PREFIX}tee_attestation_verification_cbor_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}")
 else()
     set(TAV_RUST_LIBRARY_KIND SHARED)
     set(TAV_RUST_LIBRARY_NAME "libtee_attestation_verification_ffi.so")
+    set(TAV_CBOR_RUST_LIBRARY_NAME "libtee_attestation_verification_cbor_ffi.so")
 endif()
 set(TAV_RUST_LIBRARY "${TAV_CARGO_TARGET_DIR}/debug/${TAV_RUST_LIBRARY_NAME}")
 set(TAV_TEST_LIBRARY "${CMAKE_CURRENT_BINARY_DIR}/${TAV_RUST_LIBRARY_NAME}")
+set(TAV_CBOR_RUST_LIBRARY "${TAV_CARGO_TARGET_DIR}/debug/${TAV_CBOR_RUST_LIBRARY_NAME}")
+set(TAV_CBOR_TEST_LIBRARY "${CMAKE_CURRENT_BINARY_DIR}/${TAV_CBOR_RUST_LIBRARY_NAME}")
 
 add_custom_target(tav_c_abi ALL
     COMMAND
@@ -47,6 +52,22 @@ add_library(tav ${TAV_RUST_LIBRARY_KIND} IMPORTED GLOBAL)
 add_dependencies(tav tav_c_abi)
 set_target_properties(tav PROPERTIES IMPORTED_LOCATION "${TAV_TEST_LIBRARY}")
 
+add_custom_target(tav_cbor_c_abi ALL
+    COMMAND
+        cargo build
+        --manifest-path "${TAV_REPO_ROOT}/cbor-ffi/Cargo.toml"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${TAV_CBOR_RUST_LIBRARY}"
+        "${TAV_CBOR_TEST_LIBRARY}"
+    WORKING_DIRECTORY "${TAV_REPO_ROOT}"
+    BYPRODUCTS "${TAV_CBOR_TEST_LIBRARY}"
+    COMMENT "Building tee-attestation-verification-cbor-ffi C ABI"
+    VERBATIM)
+
+add_library(tav_cbor ${TAV_RUST_LIBRARY_KIND} IMPORTED GLOBAL)
+add_dependencies(tav_cbor tav_cbor_c_abi)
+set_target_properties(tav_cbor PROPERTIES IMPORTED_LOCATION "${TAV_CBOR_TEST_LIBRARY}")
+
 if(TAV_LINK_STATIC)
     find_package(OpenSSL REQUIRED)
     find_package(Threads REQUIRED)
@@ -59,12 +80,14 @@ add_executable(tav-c-consumer-tests
     utils.cpp
     snp.cpp
     cose.cpp
+    cbor.cpp
     caci.cpp)
 target_include_directories(tav-c-consumer-tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor"
-    "${TAV_REPO_ROOT}/ffi/include")
+    "${TAV_REPO_ROOT}/ffi/include"
+    "${TAV_REPO_ROOT}/cbor-ffi/include")
 target_compile_definitions(tav-c-consumer-tests PRIVATE TAV_REPO_ROOT="${TAV_REPO_ROOT}")
-target_link_libraries(tav-c-consumer-tests PRIVATE tav)
+target_link_libraries(tav-c-consumer-tests PRIVATE tav tav_cbor)
 target_compile_options(tav-c-consumer-tests PRIVATE -Wall -Wextra)
 
 if(NOT TAV_LINK_STATIC)
