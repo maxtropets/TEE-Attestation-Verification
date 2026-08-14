@@ -26,6 +26,10 @@
 //! Round trips are not byte-preserving. Integers are decoded to `i64`,
 //! discarding the width of the original head, so a non-preferred encoding is
 //! re-serialized in its preferred form.
+//!
+//! [`CborValue::from_bytes`] and [`CborValue::to_bytes`] are deprecated. They
+//! keep the pre-[`Mode`] behaviour: parse in [`Nondet`] mode into an owned
+//! value, and serialize in [`Det`] mode.
 
 use std::borrow::Cow;
 
@@ -455,9 +459,10 @@ impl<'a> CborValue<'a> {
         Self::parse::<Det>(bytes)
     }
 
-    /// Serialize in the given [`Mode`], up to [`MAX_CBOR_NESTING_DEPTH`].
-    pub fn to_bytes<M: Mode>(&self) -> Result<Vec<u8>, String> {
-        self.to_bytes_with_depth::<M>(MAX_CBOR_NESTING_DEPTH)
+    /// Parse leniently into a value that borrows nothing from `bytes`.
+    #[deprecated(note = "renamed to `parse_nondet`, which borrows from `bytes` instead of copying")]
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        Ok(CborValue::parse_nondet(bytes)?.into_owned())
     }
 
     /// Serialize in the given [`Mode`], rejecting values nested deeper than
@@ -468,7 +473,7 @@ impl<'a> CborValue<'a> {
 
     /// Serialize to deterministic CBOR, sorting map keys.
     pub fn to_bytes_det(&self) -> Result<Vec<u8>, String> {
-        self.to_bytes::<Det>()
+        self.to_bytes_with_depth::<Det>(MAX_CBOR_NESTING_DEPTH)
     }
 
     /// Serialize preserving map entry order as given.
@@ -477,7 +482,13 @@ impl<'a> CborValue<'a> {
     /// number of map entries. [`CborValue::to_bytes_det`] sorts instead, and
     /// is the cheaper choice for large maps.
     pub fn to_bytes_nondet(&self) -> Result<Vec<u8>, String> {
-        self.to_bytes::<Nondet>()
+        self.to_bytes_with_depth::<Nondet>(MAX_CBOR_NESTING_DEPTH)
+    }
+
+    /// Serialize to deterministic CBOR, sorting map keys.
+    #[deprecated(note = "renamed to `to_bytes_det`")]
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        self.to_bytes_det()
     }
 
     /// Detach from any borrowed input, producing an independently owned value.

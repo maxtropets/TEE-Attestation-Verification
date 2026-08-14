@@ -739,3 +739,33 @@ fn integers_outside_i64_are_rejected() {
     let err = CborValue::parse_nondet(&document).expect_err("should reject");
     assert!(err.contains("exceeds i64 range"));
 }
+
+#[test]
+#[allow(deprecated)]
+fn deprecated_from_bytes_outlives_its_input() {
+    let value: CborValue<'static> = {
+        let buffer = vec![0x43, 0x01, 0x02, 0x03];
+        CborValue::from_bytes(&buffer).unwrap()
+    };
+    assert_eq!(value, CborValue::bytes(vec![1u8, 2, 3]));
+}
+
+#[test]
+#[allow(deprecated)]
+fn deprecated_from_bytes_parses_in_nondet_mode() {
+    // 1 in a one-byte head, which is not the preferred encoding.
+    let document = [0x18, 0x01];
+    assert_eq!(CborValue::from_bytes(&document).unwrap(), CborValue::Int(1));
+    assert!(CborValue::parse_det(&document).is_err());
+}
+
+#[test]
+#[allow(deprecated)]
+fn deprecated_to_bytes_serializes_in_det_mode() {
+    let value = CborValue::Map(vec![
+        (CborValue::text("b"), CborValue::Int(2)),
+        (CborValue::text("a"), CborValue::Int(1)),
+    ]);
+    assert_eq!(value.to_bytes().unwrap(), value.to_bytes_det().unwrap());
+    assert_ne!(value.to_bytes().unwrap(), value.to_bytes_nondet().unwrap());
+}
