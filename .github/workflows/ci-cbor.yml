@@ -30,6 +30,33 @@ jobs:
       - name: Test native
         run: cargo test --manifest-path cbor/Cargo.toml -- --nocapture
 
+      - name: Build FFI native
+        run: cargo build --manifest-path cbor-ffi/Cargo.toml
+
+      # Includes the tests that pin include/tav/detail/cbor_abi.h against the Rust
+      # constants and exported symbols.
+      - name: Test FFI native
+        run: cargo test --manifest-path cbor-ffi/Cargo.toml -- --nocapture
+
+  c-consumer:
+    name: CBOR C API consumer tests
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install rust
+        run: |
+          rustup update stable && rustup default stable
+
+      - name: Configure C consumer tests
+        run: cmake -S cbor-ffi/tests/c-builder -B target/cbor-c-builder-tests
+
+      - name: Build C consumer tests
+        run: cmake --build target/cbor-c-builder-tests
+
+      - name: Run C consumer tests
+        run: ctest --test-dir target/cbor-c-builder-tests --output-on-failure
+
   wasm:
     name: WASM check
     runs-on: ubuntu-22.04

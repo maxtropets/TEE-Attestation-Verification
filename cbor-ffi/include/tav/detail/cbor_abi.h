@@ -1,0 +1,188 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ * C ABI for building, serializing, parsing and inspecting CBOR documents.
+ *
+ * Implementation detail of <tav/cbor.hpp>, which owns the ownership and
+ * lifetime contract. Not a supported interface on its own.
+ *
+ * Handles:
+ * - A handle owns one CBOR value and every child below it, and is released
+ *   with tav_cbor_free. tav_cbor_free(NULL) is a no-op.
+ * - Container constructors consume every handle passed to them and set each
+ *   caller variable to NULL. Handles in a batch must be distinct; a repeated
+ *   handle is consumed twice and so freed twice.
+ * - A batch containing NULL is rejected, and any handle already consumed from
+ *   it is returned to the caller's variables, possibly at a different address.
+ * - Accessors return a borrowed handle, valid until its owning root is freed.
+ *   A borrowed handle must not be freed or consumed.
+ *
+ * Payloads:
+ * - Scalars are copied. tav_cbor_make_bytes and tav_cbor_make_string borrow:
+ *   the handle stores the caller's pointer and length, and so does every
+ *   pointer returned by tav_cbor_as_bytes and tav_cbor_as_string.
+ * - tav_cbor_deep_copy copies every payload, so its result depends on no
+ *   caller buffer.
+ * - Serialization output is newly allocated and owned by the caller.
+ */
+
+typedef struct TavCborHandle TavCborHandle;
+
+/*
+ * Ceiling on nesting depth. Parse and serialize calls clamp the depth the
+ * caller asks for to this value, so deeper documents are always rejected.
+ */
+#define TAV_CBOR_MAX_DEPTH 256
+
+/*
+ * Status codes, named for use with the int returned by the calls below. The
+ * enum type itself is not used in any signature, because a C enum has
+ * implementation-defined width.
+ */
+typedef enum TavCborStatus
+{
+    TAV_CBOR_OK = 0,
+    TAV_CBOR_DECODE_FAILED = 1,
+    TAV_CBOR_KEY_NOT_FOUND = 2,
+    TAV_CBOR_OUT_OF_BOUND = 3,
+    TAV_CBOR_TYPE_MISMATCH = 4,
+    TAV_CBOR_ENCODE_FAILED = 5,
+} TavCborStatus;
+
+/*
+ * Value kinds, named for use with tav_cbor_kind. The enum type itself is not
+ * used in any signature, because a C enum has implementation-defined width.
+ */
+typedef enum TavCborHandleKind
+{
+    TAV_CBOR_HANDLE_KIND_INVALID = -1,
+    TAV_CBOR_HANDLE_KIND_SIGNED = 0,
+    TAV_CBOR_HANDLE_KIND_BYTES = 1,
+    TAV_CBOR_HANDLE_KIND_STRING = 2,
+    TAV_CBOR_HANDLE_KIND_ARRAY = 3,
+    TAV_CBOR_HANDLE_KIND_MAP = 4,
+    TAV_CBOR_HANDLE_KIND_TAGGED = 5,
+    TAV_CBOR_HANDLE_KIND_SIMPLE = 6,
+} TavCborHandleKind;
+
+/* Scalar constructors, which copy. Return NULL on failure. */
+TavCborHandle* tav_cbor_make_signed(int64_t value);
+TavCborHandle* tav_cbor_make_simple(uint8_t value);
+
+/* Payload constructors, which borrow data for the life of the handle. */
+TavCborHandle* tav_cbor_make_bytes(const uint8_t* data, size_t len);
+/* data must be valid UTF-8. */
+TavCborHandle* tav_cbor_make_string(const char* data, size_t len);
+
+/* Container constructors, which consume every handle passed to them. */
+TavCborHandle* tav_cbor_make_array(TavCborHandle** items, size_t count);
+/*
+ * pairs holds key, value, key, value, ... so it has 2 * pair_count entries.
+ * Keys must not be arrays, maps or tagged values.
+ */
+TavCborHandle* tav_cbor_make_map(TavCborHandle** pairs, size_t pair_count);
+TavCborHandle* tav_cbor_make_tagged(uint64_t tag, TavCborHandle** payload);
+
+/*
+ * Copy a value and everything below it. Each payload keeps the ownership the
+ * source had: borrowed payloads are borrowed again from the same buffer, and
+ * owned payloads are copied. Returns NULL on failure.
+ */
+TavCborHandle* tav_cbor_shallow_copy(const TavCborHandle* value);
+
+/*
+ * Copy a value and everything below it, copying every payload, so the result
+ * borrows nothing. Returns NULL on failure.
+ */
+TavCborHandle* tav_cbor_deep_copy(const TavCborHandle* value);
+
+void tav_cbor_free(TavCborHandle* value);
+
+/*
+ * Serialization. On success writes an owned buffer through out_ptr/out_len,
+ * released with tav_cbor_buffer_free. On failure writes a UTF-8 message, not
+ * NUL terminated, through err_ptr/err_len, released the same way; passing
+ * NULL for both suppresses the message.
+ */
+int tav_cbor_nondet_serialize(
+  const TavCborHandle* value,
+  size_t max_depth,
+  uint8_t** out_ptr,
+  size_t* out_len,
+  uint8_t** err_ptr,
+  size_t* err_len);
+
+/* Deterministic encoding. */
+int tav_cbor_det_serialize(
+  const TavCborHandle* value,
+  size_t max_depth,
+  uint8_t** out_ptr,
+  size_t* out_len,
+  uint8_t** err_ptr,
+  size_t* err_len);
+
+/*
+ * Parsing. On success writes an owning handle through out_value. The returned
+ * tree borrows byte and text payloads from data, which must outlive it.
+ */
+int tav_cbor_nondet_parse(
+  const uint8_t* data,
+  size_t len,
+  size_t max_depth,
+  TavCborHandle** out_value,
+  uint8_t** err_ptr,
+  size_t* err_len);
+
+/* Requires deterministic encoding. */
+int tav_cbor_det_parse(
+  const uint8_t* data,
+  size_t len,
+  size_t max_depth,
+  TavCborHandle** out_value,
+  uint8_t** err_ptr,
+  size_t* err_len);
+
+void tav_cbor_buffer_free(uint8_t* ptr, size_t len);
+
+/* Inspection. Returns one of the TAV_CBOR_HANDLE_KIND_* values. */
+int tav_cbor_kind(const TavCborHandle* value);
+int tav_cbor_as_signed(const TavCborHandle* value, int64_t* out);
+int tav_cbor_as_simple(const TavCborHandle* value, uint8_t* out);
+int tav_cbor_as_bytes(const TavCborHandle* value, const uint8_t** out, size_t* out_len);
+int tav_cbor_as_string(const TavCborHandle* value, const char** out, size_t* out_len);
+/* The tag of a tagged value. Pair with tav_cbor_tag_at to reach the payload. */
+int tav_cbor_as_tag(const TavCborHandle* value, uint64_t* out);
+
+/* Array or map entry count. TAV_CBOR_TYPE_MISMATCH for anything else. */
+int tav_cbor_size(const TavCborHandle* value, size_t* out);
+
+/*
+ * Navigation. Each writes a borrowed child through out.
+ *
+ * array_at: TYPE_MISMATCH if not an array, OUT_OF_BOUND past the end.
+ * map_at:   TYPE_MISMATCH if not a map or if the key is a container, which a
+ *           map cannot hold,
+ *           KEY_NOT_FOUND if absent.
+ * tag_at:   TYPE_MISMATCH if not tagged, KEY_NOT_FOUND if the tag differs.
+ */
+int tav_cbor_array_at(const TavCborHandle* value, size_t index, const TavCborHandle** out);
+int tav_cbor_map_at(const TavCborHandle* value, const TavCborHandle* key, const TavCborHandle** out);
+int tav_cbor_tag_at(const TavCborHandle* value, uint64_t tag, const TavCborHandle** out);
+
+/* Map enumeration, for callers that walk rather than look up. */
+int tav_cbor_map_key_at(const TavCborHandle* value, size_t index, const TavCborHandle** out);
+int tav_cbor_map_value_at(const TavCborHandle* value, size_t index, const TavCborHandle** out);
+
+#ifdef __cplusplus
+}
+#endif

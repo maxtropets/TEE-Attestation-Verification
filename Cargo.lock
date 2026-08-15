@@ -782,6 +782,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tee-attestation-verification-cbor-ffi"
+version = "1.0.7"
+dependencies = [
+ "tee-attestation-verification-cbor",
+]
+
+[[package]]
 name = "tee-attestation-verification-cose"
 version = "1.0.8"
 dependencies = [
