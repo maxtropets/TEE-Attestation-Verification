@@ -1,6 +1,6 @@
 [package]
 name = "tee-attestation-verification-cbor-ffi"
-version = "1.0.7"
+version = "1.0.8"
 edition = "2021"
 rust-version = "1.77"
 repository = "https://github.com/microsoft/TEE-Attestation-Verification"
@@ -13,4 +13,4 @@ license = "MIT"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-cbor = { package = "tee-attestation-verification-cbor", version = "1.0.7", path = "../cbor" }
+cbor = { package = "tee-attestation-verification-cbor", version = "1.0.8", path = "../cbor" }

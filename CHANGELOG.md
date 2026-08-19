@@ -4,6 +4,10 @@
 
 [1.0.8]: https://github.com/microsoft/TEE-Attestation-Verification/releases/tag/tav-1.0.8
 
+### Added
+
+- `tee-attestation-verification-cbor-ffi` crate: a handle-based C ABI for building, parsing, serializing and inspecting CBOR, with a C++ wrapper in `include/tav/cbor.hpp`. (#128)
+
 ### Removed
 
 - Removed the `crypto_pure_rust` backend and feature from all crates. (#131)
