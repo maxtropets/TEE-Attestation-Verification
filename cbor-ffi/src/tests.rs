@@ -103,6 +103,21 @@ fn scalars_round_trip() {
 }
 
 #[test]
+fn reserved_simple_values_are_rejected() {
+    for value in 24..=31u8 {
+        assert!(tav_cbor_make_simple(value).is_null(), "accepted {value}");
+    }
+
+    // The neighbours on both sides stay usable.
+    for value in [23u8, 32u8] {
+        let handle = tav_cbor_make_simple(value);
+        assert!(!handle.is_null(), "rejected {value}");
+        assert!(encode_det(handle).is_ok());
+        unsafe { tav_cbor_free(handle) };
+    }
+}
+
+#[test]
 fn integer_bounds_round_trip() {
     for value in [i64::MIN, i64::MAX] {
         let handle = tav_cbor_make_signed(value);
@@ -736,11 +751,11 @@ fn freeing_null_is_a_no_op() {
 }
 
 #[test]
-fn output_parameters_are_untouched_on_failure() {
+fn output_parameters_are_cleared_on_failure() {
     let document = [0xff];
     let sentinel = 0x1 as *mut TavCborHandle;
     let mut value = sentinel;
-    let (mut err, mut err_len) = (ptr::null_mut(), 0usize);
+    let (mut err, mut err_len) = (0x1 as *mut u8, 12345usize);
 
     assert_eq!(
         unsafe {
@@ -755,7 +770,7 @@ fn output_parameters_are_untouched_on_failure() {
         },
         STATUS_DECODE_FAILED
     );
-    assert_eq!(value, sentinel);
+    assert!(value.is_null());
     assert!(err_len > 0);
     unsafe { tav_cbor_buffer_free(err, err_len) };
 
@@ -765,8 +780,7 @@ fn output_parameters_are_untouched_on_failure() {
     let mut outer = vec![nested];
     let nested = unsafe { tav_cbor_make_array(outer.as_mut_ptr(), 1) };
 
-    let buffer_sentinel = 0x1 as *mut u8;
-    let mut out = buffer_sentinel;
+    let mut out = 0x1 as *mut u8;
     let mut out_len = 12345usize;
     assert_eq!(
         unsafe {
@@ -781,8 +795,57 @@ fn output_parameters_are_untouched_on_failure() {
         },
         STATUS_ENCODE_FAILED
     );
-    assert_eq!(out, buffer_sentinel);
-    assert_eq!(out_len, 12345);
+    assert!(out.is_null());
+    assert_eq!(out_len, 0);
+    unsafe { tav_cbor_free(nested) };
+}
+
+/// A failure must not leave a stale pointer that the caller frees twice.
+#[test]
+fn a_reused_output_slot_is_cleared_before_the_next_failure() {
+    let mut out: *mut u8 = ptr::null_mut();
+    let mut out_len = 0usize;
+    let value = tav_cbor_make_signed(1);
+
+    assert_eq!(
+        unsafe {
+            tav_cbor_det_serialize(
+                value,
+                16,
+                &mut out,
+                &mut out_len,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        },
+        STATUS_OK
+    );
+    assert!(!out.is_null());
+    unsafe { tav_cbor_buffer_free(out, out_len) };
+
+    // The same slots now hold a freed pointer. A failing call must clear them,
+    // so the caller cannot tell it to free that pointer again.
+    let mut items = vec![value];
+    let nested = unsafe { tav_cbor_make_array(items.as_mut_ptr(), 1) };
+    let mut outer = vec![nested];
+    let nested = unsafe { tav_cbor_make_array(outer.as_mut_ptr(), 1) };
+
+    assert_eq!(
+        unsafe {
+            tav_cbor_det_serialize(
+                nested,
+                1,
+                &mut out,
+                &mut out_len,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        },
+        STATUS_ENCODE_FAILED
+    );
+    assert!(out.is_null());
+    assert_eq!(out_len, 0);
+    unsafe { tav_cbor_buffer_free(out, out_len) };
     unsafe { tav_cbor_free(nested) };
 }
 

@@ -25,6 +25,13 @@ static_assert(std::is_move_constructible_v<Value>);
 static_assert(std::is_move_assignable_v<Value>);
 static_assert(!std::is_constructible_v<Value, TavCborHandle*>);
 
+// A Ref outlives a temporary Value, so only an lvalue can be borrowed.
+template <typename T>
+concept Borrowable = requires(T&& value) { std::forward<T>(value).ref(); };
+static_assert(Borrowable<Value&>);
+static_assert(Borrowable<const Value&>);
+static_assert(!Borrowable<Value&&>);
+
 namespace {
 
 std::vector<uint8_t> vec(std::span<const uint8_t> data)
@@ -159,6 +166,24 @@ TEST_CASE("cbor handle: payloads are borrowed, not copied")
     CHECK(vec(parsed.ref().as_bytes()) == std::vector<uint8_t>{1, 2, 3});
 }
 
+TEST_CASE("cbor handle: det_parse accepts a canonical encoding and round trips")
+{
+    std::vector<MapItem> entries;
+    entries.emplace_back(make_signed(2), make_string("two"));
+    entries.emplace_back(make_signed(1), make_string("one"));
+    const Value built = make_map(std::move(entries));
+    const std::vector<uint8_t> encoded = built.det_serialize();
+
+    const Value parsed = det_parse(encoded);
+    const Ref root = parsed.ref();
+    CHECK(root.kind() == Kind::MAP);
+    CHECK(root.size() == 2);
+
+    const Value one = make_signed(1);
+    CHECK(root.map_at(one.ref()).as_string() == "one");
+    CHECK(parsed.det_serialize() == encoded);
+}
+
 TEST_CASE("cbor handle: errors carry the ABI status")
 {
     const std::vector<uint8_t> document = {0x81, 0x01}; // [1]
@@ -178,6 +203,7 @@ TEST_CASE("cbor handle: errors carry the ABI status")
     try
     {
         (void)root.as_signed(); // an array is not a signed value
+        FAIL("expected a CborError");
     }
     catch (const CborError& e)
     {
@@ -187,18 +213,26 @@ TEST_CASE("cbor handle: errors carry the ABI status")
     try
     {
         (void)root.tag_at(18); // not tagged at all
+        FAIL("expected a CborError");
     }
     catch (const CborError& e)
     {
         CHECK(e.error_code() == Error::TYPE_MISMATCH);
     }
 
-    // A non-canonical encoding: 1 in a two-byte head.
+    // A non-canonical encoding: 1 in a two-byte head. Only det_parse rejects
+    // it, and the canonical spelling of the same value is accepted.
     const std::vector<uint8_t> non_canonical = {0x18, 0x01};
+    const std::vector<uint8_t> canonical = {0x01};
     CHECK_NOTHROW(nondet_parse(non_canonical));
+
+    const Value canonical_parsed = det_parse(canonical);
+    CHECK(canonical_parsed.ref().as_signed() == 1);
+
     try
     {
         (void)det_parse(non_canonical);
+        FAIL("expected a CborError");
     }
     catch (const CborError& e)
     {
@@ -293,6 +327,20 @@ TEST_CASE("cbor handle: simple values convert to and from booleans")
     const Value null_value = make_simple(SimpleValue::Null);
     CHECK(null_value.ref().as_simple() == SimpleValue::Null);
     CHECK(null_value.det_serialize() == std::vector<uint8_t>{0xf6});
+}
+
+TEST_CASE("cbor handle: reserved simple values cannot be built")
+{
+    for (uint8_t value = 24; value <= 31; ++value)
+    {
+        CHECK_THROWS_AS((void)make_simple(value), EncodeError);
+    }
+
+    // The neighbours on both sides still build and serialize.
+    const Value below = make_simple(23);
+    const Value above = make_simple(32);
+    CHECK(below.det_serialize() == std::vector<uint8_t>{0xf7});
+    CHECK(above.det_serialize() == std::vector<uint8_t>{0xf8, 0x20});
 }
 
 TEST_CASE("cbor handle: rethrow_with_msg prefixes decode errors only")
@@ -419,8 +467,9 @@ TEST_CASE("cbor handle: copying reproduces every kind")
 
 TEST_CASE("cbor handle: an empty value cannot be copied")
 {
-    CHECK_THROWS_AS((void)shallow_copy(Value{}.ref()), EncodeError);
-    CHECK_THROWS_AS((void)deep_copy(Value{}.ref()), EncodeError);
+    const Value empty;
+    CHECK_THROWS_AS((void)shallow_copy(empty.ref()), EncodeError);
+    CHECK_THROWS_AS((void)deep_copy(empty.ref()), EncodeError);
 }
 
 TEST_CASE("cbor handle: rebuilding a map with one entry replaced")
@@ -485,7 +534,8 @@ TEST_CASE("cbor handle: shallow_copy keeps an owned payload owned")
     Value copied;
     {
         const std::vector<uint8_t> buffer = {0xaa, 0xbb, 0xcc};
-        const Value source = deep_copy(make_bytes(buffer).ref());
+        const Value borrowing = make_bytes(buffer);
+        const Value source = deep_copy(borrowing.ref());
         copied = shallow_copy(source.ref());
         CHECK(copied.ref().as_bytes().data() != source.ref().as_bytes().data());
     }
@@ -567,7 +617,8 @@ TEST_CASE("cbor handle: as_tag reads the tag a tagged value carries")
     CHECK(tagged.ref().tag_at(tagged.ref().as_tag()).as_signed() == 7);
 
     // Anything else is a mismatch rather than a silent zero.
-    CHECK_THROWS_AS((void)make_signed(1).ref().as_tag(), DecodeError);
+    const Value untagged = make_signed(1);
+    CHECK_THROWS_AS((void)untagged.ref().as_tag(), DecodeError);
 }
 
 TEST_CASE("cbor handle: moving transfers the handle and releases the target's own")
@@ -596,6 +647,9 @@ TEST_CASE("cbor handle: empty containers round trip")
 {
     CHECK(make_array({}).det_serialize() == std::vector<uint8_t>{0x80});
     CHECK(make_map({}).det_serialize() == std::vector<uint8_t>{0xa0});
-    CHECK(make_array({}).ref().size() == 0);
-    CHECK(make_map({}).ref().size() == 0);
+
+    const Value array = make_array({});
+    const Value map = make_map({});
+    CHECK(array.ref().size() == 0);
+    CHECK(map.ref().size() == 0);
 }

@@ -206,3 +206,11 @@ pub(crate) fn usable_as_key(value: &CborValue<'static>) -> bool {
         CborValue::Array(_) | CborValue::Map(_) | CborValue::Tagged { .. }
     )
 }
+
+/// Whether `value` is a simple value RFC 8949 reserves.
+///
+/// The reserved range has no encoding, so a handle holding one could be
+/// inspected but never serialized.
+pub(crate) fn is_reserved_simple(value: u8) -> bool {
+    (24..=31).contains(&value)
+}

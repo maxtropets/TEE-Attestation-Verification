@@ -12,7 +12,8 @@
 //   and cannot be consumed twice.
 // - Container builders consume the values passed to them, leaving each source
 //   empty(). A consumed Value must not be used again.
-// - Ref borrows, and stays valid only while the owning Value lives.
+// - Ref borrows, and stays valid only while the owning Value lives. Only a
+//   named Value can be borrowed: ref() is rejected on a temporary.
 //
 // Payload ownership:
 // - Scalars are copied. Byte and text payloads are borrowed: a buffer passed
@@ -278,10 +279,14 @@ public:
         return handle_ == nullptr;
     }
 
-    [[nodiscard]] Ref ref() const
+    /// Only an lvalue can be borrowed: a temporary would free the handle at
+    /// the end of the full expression, leaving the Ref pointing at nothing.
+    [[nodiscard]] Ref ref() const&
     {
         return Ref(handle_);
     }
+
+    Ref ref() const&& = delete;
 
     [[nodiscard]] std::vector<uint8_t> nondet_serialize(
       size_t max_depth = MAX_DEPTH) const

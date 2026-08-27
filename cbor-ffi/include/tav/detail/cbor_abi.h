@@ -34,6 +34,16 @@ extern "C" {
  * - tav_cbor_deep_copy copies every payload, so its result depends on no
  *   caller buffer.
  * - Serialization output is newly allocated and owned by the caller.
+ *
+ * Out-parameters:
+ * - Outputs the caller must release, meaning the parse handle, the
+ *   serialization buffer and the error message, are cleared to NULL or zero
+ *   before any work. A failed call therefore leaves no earlier pointer in
+ *   place, and a slot reused across calls is never freed twice.
+ * - Every other output is written only on success, so a failed call leaves
+ *   its previous value alone. The status says whether it was written.
+ * - A call whose out-parameter is NULL reports a status rather than writing.
+ *   err_ptr and err_len may be NULL, which suppresses the message.
  */
 
 typedef struct TavCborHandle TavCborHandle;

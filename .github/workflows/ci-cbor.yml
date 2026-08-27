@@ -38,6 +38,22 @@ jobs:
       - name: Test FFI native
         run: cargo test --manifest-path cbor-ffi/Cargo.toml -- --nocapture
 
+  miri:
+    name: Undefined behaviour check for CBOR FFI
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install rust  # Miri requires nightly.
+        run: |
+          rustup toolchain install nightly --component miri,rust-src
+
+      - name: Test native under Miri
+        run: cargo +nightly miri test --manifest-path cbor/Cargo.toml
+
+      - name: Test FFI native under Miri
+        run: cargo +nightly miri test --manifest-path cbor-ffi/Cargo.toml
+
   c-consumer:
     name: CBOR C API consumer tests
     runs-on: ubuntu-22.04

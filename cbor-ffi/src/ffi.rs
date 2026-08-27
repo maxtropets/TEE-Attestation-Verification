@@ -13,8 +13,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use cbor::{CborValue, Det, Mode, Nondet};
 
 use crate::{
-    as_value, borrow, borrowed, bytes_value, capped, into_handle, kind_of, string_value, take,
-    take_all, usable_as_key, TavCborHandle, KIND_INVALID, STATUS_DECODE_FAILED,
+    as_value, borrow, borrowed, bytes_value, capped, into_handle, is_reserved_simple, kind_of,
+    string_value, take, take_all, usable_as_key, TavCborHandle, KIND_INVALID, STATUS_DECODE_FAILED,
     STATUS_ENCODE_FAILED, STATUS_KEY_NOT_FOUND, STATUS_OK, STATUS_OUT_OF_BOUND,
     STATUS_TYPE_MISMATCH,
 };
@@ -29,6 +29,41 @@ fn guard_status(on_panic: i32, body: impl FnOnce() -> i32) -> i32 {
     catch_unwind(AssertUnwindSafe(body)).unwrap_or(on_panic)
 }
 
+/// Validate and reset a scalar out-parameter before fallible work.
+///
+/// # Safety
+/// `out` must be null or valid for writing.
+unsafe fn scalar_out_ptr<T: Default>(out: *mut T) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    unsafe { *out = T::default() };
+    true
+}
+
+/// Validate and reset an owned-pointer out-parameter before fallible work.
+///
+/// # Safety
+/// `out` must be null or valid for writing.
+unsafe fn owned_out_ptr<T>(out: *mut *mut T) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    unsafe { *out = std::ptr::null_mut() };
+    true
+}
+
+/// Reset the error out-parameters, which the caller may omit.
+///
+/// # Safety
+/// `err_ptr` and `err_len` must be null or valid for writing.
+unsafe fn reset_error(err_ptr: *mut *mut u8, err_len: *mut usize) {
+    unsafe {
+        owned_out_ptr(err_ptr);
+        scalar_out_ptr(err_len);
+    }
+}
+
 /// Copy `msg` into a caller-owned buffer, released with [`tav_cbor_buffer_free`].
 ///
 /// # Safety
@@ -37,10 +72,9 @@ unsafe fn set_error(msg: &str, err_ptr: *mut *mut u8, err_len: *mut usize) {
     if err_ptr.is_null() || err_len.is_null() {
         return;
     }
-    let mut bytes = msg.as_bytes().to_vec().into_boxed_slice();
+    let bytes = msg.as_bytes().to_vec().into_boxed_slice();
     let len = bytes.len();
-    let ptr = bytes.as_mut_ptr();
-    std::mem::forget(bytes);
+    let ptr = Box::into_raw(bytes).cast::<u8>();
     unsafe {
         *err_ptr = ptr;
         *err_len = len;
@@ -56,9 +90,16 @@ pub extern "C" fn tav_cbor_make_signed(value: i64) -> *mut TavCborHandle {
 }
 
 /// Build a CBOR simple value, such as false, true, or null.
+///
+/// Returns null for the values RFC 8949 reserves.
 #[no_mangle]
 pub extern "C" fn tav_cbor_make_simple(value: u8) -> *mut TavCborHandle {
-    guard_handle(|| into_handle(CborValue::Simple(value)))
+    guard_handle(|| {
+        if is_reserved_simple(value) {
+            return std::ptr::null_mut();
+        }
+        into_handle(CborValue::Simple(value))
+    })
 }
 
 /// Build a byte string that borrows `data`.
@@ -218,20 +259,22 @@ unsafe fn serialize<M: Mode>(
     err_ptr: *mut *mut u8,
     err_len: *mut usize,
 ) -> i32 {
+    unsafe { reset_error(err_ptr, err_len) };
+    let out_ok = unsafe { owned_out_ptr(out_ptr) };
+    let len_ok = unsafe { scalar_out_ptr(out_len) };
     let Some(value) = (unsafe { as_value(value) }) else {
         unsafe { set_error("Null CBOR handle", err_ptr, err_len) };
         return STATUS_ENCODE_FAILED;
     };
-    if out_ptr.is_null() || out_len.is_null() {
+    if !out_ok || !len_ok {
         unsafe { set_error("Null output pointer", err_ptr, err_len) };
         return STATUS_ENCODE_FAILED;
     }
     match value.to_bytes_with_depth::<M>(capped(max_depth)) {
         Ok(bytes) => {
-            let mut bytes = bytes.into_boxed_slice();
+            let bytes = bytes.into_boxed_slice();
             let len = bytes.len();
-            let ptr = bytes.as_mut_ptr();
-            std::mem::forget(bytes);
+            let ptr = Box::into_raw(bytes).cast::<u8>();
             unsafe {
                 *out_ptr = ptr;
                 *out_len = len;
@@ -247,10 +290,11 @@ unsafe fn serialize<M: Mode>(
 
 /// Serialize.
 ///
-/// On success writes an owned buffer through `out_ptr`/`out_len`, released
-/// with [`tav_cbor_buffer_free`]. On failure writes a UTF-8 message, not NUL
-/// terminated, through `err_ptr`/`err_len`, released the same way. Output
-/// parameters are written only on success, and the message only on failure.
+/// The buffer and message outputs are cleared before any work, so a failure
+/// leaves no stale pointer to free. On success writes an owned buffer through
+/// `out_ptr`/`out_len`, released with [`tav_cbor_buffer_free`]. On failure
+/// writes a UTF-8 message, not NUL terminated, through `err_ptr`/`err_len`,
+/// released the same way.
 ///
 /// # Safety
 /// All output pointers must be null or valid for writing.
@@ -296,7 +340,8 @@ unsafe fn parse<M: Mode>(
     err_ptr: *mut *mut u8,
     err_len: *mut usize,
 ) -> i32 {
-    if out_value.is_null() {
+    unsafe { reset_error(err_ptr, err_len) };
+    if !unsafe { owned_out_ptr(out_value) } {
         unsafe { set_error("Null output pointer", err_ptr, err_len) };
         return STATUS_DECODE_FAILED;
     }
@@ -320,7 +365,8 @@ unsafe fn parse<M: Mode>(
 ///
 /// Indefinite-length encodings are rejected, and the whole input must be
 /// consumed. The returned tree borrows byte and text payloads from `data`,
-/// which must outlive it.
+/// which must outlive it. The handle and message outputs are cleared before
+/// any work, so a failure leaves no stale handle to free.
 ///
 /// # Safety
 /// `data` must be valid for `len` bytes and outlive the returned handle. All
