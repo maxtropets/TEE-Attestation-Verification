@@ -634,6 +634,27 @@ fn map_lookup_matches_by_value() {
 }
 
 #[test]
+fn parsing_rejects_a_container_used_as_a_map_key() {
+    // {[1]: 2}, which map_at could never look up.
+    let document = [0xa1, 0x81, 0x01, 0x02];
+    assert!(parse_nondet(&document).is_err());
+    assert!(decode(&document, MAX_DEPTH_LIMIT, true).is_err());
+
+    // Nested below the root, so the whole tree is checked.
+    let nested = [0x81, 0xa1, 0x81, 0x01, 0x02]; // [{[1]: 2}]
+    assert!(parse_nondet(&nested).is_err());
+
+    // A map key is also rejected under a tag.
+    let tagged = [0xd2, 0xa1, 0x81, 0x01, 0x02]; // 18({[1]: 2})
+    assert!(parse_nondet(&tagged).is_err());
+
+    // Scalar keys of every kind still parse.
+    let scalars = [0xa2, 0x01, 0x02, 0x63, 0x6b, 0x65, 0x79, 0x04];
+    let handle = parse_nondet(&scalars).unwrap();
+    unsafe { tav_cbor_free(handle) };
+}
+
+#[test]
 fn containers_are_not_usable_as_map_keys() {
     let document = [0xa1, 0x01, 0x02];
     let handle = parse_nondet(&document).unwrap();

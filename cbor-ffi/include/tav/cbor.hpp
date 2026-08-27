@@ -513,6 +513,9 @@ inline Value make_tagged(uint64_t tag, Value&& payload)
 }
 
 /// Borrows raw, which must outlive the returned value.
+///
+/// A document that keys a map entry on a container is rejected, so a parsed
+/// map holds only keys map_at can look up.
 inline Value nondet_parse(std::span<const uint8_t> raw, size_t max_depth = MAX_DEPTH)
 {
     return Value::parse_with(tav_cbor_nondet_parse, raw, max_depth);

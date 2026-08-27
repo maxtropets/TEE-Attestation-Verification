@@ -144,6 +144,9 @@ int tav_cbor_det_serialize(
 /*
  * Parsing. On success writes an owning handle through out_value. The returned
  * tree borrows byte and text payloads from data, which must outlive it.
+ *
+ * A document whose maps key an entry on an array, map or tagged value is
+ * rejected, so a parsed map holds only keys map_at can look up.
  */
 int tav_cbor_nondet_parse(
   const uint8_t* data,

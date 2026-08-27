@@ -13,10 +13,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use cbor::{CborValue, Det, Mode, Nondet};
 
 use crate::{
-    as_value, borrow, borrowed, bytes_value, capped, into_handle, is_reserved_simple, kind_of,
-    string_value, take, take_all, usable_as_key, TavCborHandle, KIND_INVALID, STATUS_DECODE_FAILED,
-    STATUS_ENCODE_FAILED, STATUS_KEY_NOT_FOUND, STATUS_OK, STATUS_OUT_OF_BOUND,
-    STATUS_TYPE_MISMATCH,
+    as_value, borrow, borrowed, bytes_value, capped, into_handle, is_reserved_simple,
+    keys_are_usable, kind_of, string_value, take, take_all, usable_as_key, TavCborHandle,
+    KIND_INVALID, STATUS_DECODE_FAILED, STATUS_ENCODE_FAILED, STATUS_KEY_NOT_FOUND, STATUS_OK,
+    STATUS_OUT_OF_BOUND, STATUS_TYPE_MISMATCH,
 };
 
 /// Run `body`, returning a null handle if it panics.
@@ -351,6 +351,10 @@ unsafe fn parse<M: Mode>(
     };
     match CborValue::parse_with_depth::<M>(bytes, capped(max_depth)) {
         Ok(value) => {
+            if !keys_are_usable(&value) {
+                unsafe { set_error("Container used as a map key", err_ptr, err_len) };
+                return STATUS_DECODE_FAILED;
+            }
             unsafe { *out_value = into_handle(value) };
             STATUS_OK
         }
@@ -364,9 +368,11 @@ unsafe fn parse<M: Mode>(
 /// Parse.
 ///
 /// Indefinite-length encodings are rejected, and the whole input must be
-/// consumed. The returned tree borrows byte and text payloads from `data`,
-/// which must outlive it. The handle and message outputs are cleared before
-/// any work, so a failure leaves no stale handle to free.
+/// consumed. A document that keys a map entry on a container is rejected too,
+/// so a parsed map holds only keys [`tav_cbor_map_at`] can look up. The
+/// returned tree borrows byte and text payloads from `data`, which must
+/// outlive it. The handle and message outputs are cleared before any work, so
+/// a failure leaves no stale handle to free.
 ///
 /// # Safety
 /// `data` must be valid for `len` bytes and outlive the returned handle. All

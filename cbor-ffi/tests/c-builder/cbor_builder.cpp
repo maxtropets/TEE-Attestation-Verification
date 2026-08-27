@@ -607,6 +607,40 @@ TEST_CASE("cbor handle: a container cannot be a map key")
     std::vector<MapItem> tagged;
     tagged.emplace_back(make_tagged(18, make_signed(1)), make_signed(7));
     CHECK_THROWS_AS(make_map(std::move(tagged)), EncodeError);
+
+    // Parsing applies the same rule, so no map reachable through this API
+    // holds a key map_at would refuse.
+    CHECK_THROWS_AS(
+      (void)nondet_parse(std::vector<uint8_t>{0xa1, 0x81, 0x01, 0x02}),
+      DecodeError); // {[1]: 2}
+    CHECK_THROWS_AS(
+      (void)det_parse(std::vector<uint8_t>{0xa1, 0x81, 0x01, 0x02}),
+      DecodeError);
+
+    // Nested below the root, so the whole tree is checked.
+    CHECK_THROWS_AS(
+      (void)nondet_parse(std::vector<uint8_t>{0x81, 0xa1, 0x81, 0x01, 0x02}),
+      DecodeError); // [{[1]: 2}]
+}
+
+TEST_CASE("cbor handle: every key of a parsed map can be looked up")
+{
+    std::vector<MapItem> entries;
+    entries.emplace_back(make_signed(1), make_string("one"));
+    entries.emplace_back(make_string("two"), make_signed(2));
+    const Value built = make_map(std::move(entries));
+
+    const std::vector<uint8_t> encoded = built.det_serialize();
+    const Value parsed = det_parse(encoded);
+    const Ref root = parsed.ref();
+
+    // Enumeration and lookup agree: whatever map_key_at hands back, map_at
+    // accepts.
+    for (size_t i = 0; i < root.size(); ++i)
+    {
+        const Ref key = root.map_key_at(i);
+        CHECK_NOTHROW((void)root.map_at(key));
+    }
 }
 
 TEST_CASE("cbor handle: as_tag reads the tag a tagged value carries")

@@ -199,12 +199,27 @@ pub(crate) fn kind_of(value: &CborValue<'static>) -> i32 {
 /// Whether `value` may be used as a map key.
 ///
 /// Containers are excluded, so that every key a map can hold is also a key
-/// the C ABI can look up.
+/// the C ABI can look up. Parsing enforces the same rule, so a map reached
+/// through this ABI never holds a key that map_at would refuse.
 pub(crate) fn usable_as_key(value: &CborValue<'static>) -> bool {
     !matches!(
         value,
         CborValue::Array(_) | CborValue::Map(_) | CborValue::Tagged { .. }
     )
+}
+
+/// Whether every map below `value` keys its entries on something usable.
+///
+/// Recursion is bounded by the depth the parse was capped to.
+pub(crate) fn keys_are_usable(value: &CborValue<'static>) -> bool {
+    match value {
+        CborValue::Array(items) => items.iter().all(keys_are_usable),
+        CborValue::Map(entries) => entries
+            .iter()
+            .all(|(key, item)| usable_as_key(key) && keys_are_usable(item)),
+        CborValue::Tagged { payload, .. } => keys_are_usable(payload),
+        _ => true,
+    }
 }
 
 /// Whether `value` is a simple value RFC 8949 reserves.
