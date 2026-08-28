@@ -13,8 +13,8 @@ extern "C" {
 /*
  * C ABI for building, serializing, parsing and inspecting CBOR documents.
  *
- * Implementation detail of <tav/cbor.hpp>, which owns the ownership and
- * lifetime contract. Not a supported interface on its own.
+ * Internal to <tav/cbor.hpp>, which owns the ownership and lifetime
+ * contract. Not a supported interface on its own.
  *
  * Handles:
  * - A handle owns one CBOR value and every child below it, and is released

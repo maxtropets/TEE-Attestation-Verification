@@ -31,12 +31,12 @@ jobs:
         run: cargo test --manifest-path cbor/Cargo.toml -- --nocapture
 
       - name: Build FFI native
-        run: cargo build --manifest-path cbor-ffi/Cargo.toml
+        run: cargo build --manifest-path ffi/Cargo.toml --no-default-features --features crypto_openssl
 
-      # Includes the tests that pin include/tav/detail/cbor_abi.h against the Rust
-      # constants and exported symbols.
+      # Includes the tests that pin include/tav/internal/cbor_abi.h against
+      # the Rust constants and exported symbols.
       - name: Test FFI native
-        run: cargo test --manifest-path cbor-ffi/Cargo.toml -- --nocapture
+        run: cargo test --manifest-path ffi/Cargo.toml --no-default-features --features crypto_openssl -- --nocapture
 
   miri:
     name: Undefined behaviour check for CBOR FFI
@@ -52,7 +52,7 @@ jobs:
         run: cargo +nightly miri test --manifest-path cbor/Cargo.toml
 
       - name: Test FFI native under Miri
-        run: cargo +nightly miri test --manifest-path cbor-ffi/Cargo.toml
+        run: cargo +nightly miri test --manifest-path ffi/Cargo.toml --no-default-features --features crypto_openssl
 
   c-consumer:
     name: CBOR C API consumer tests
@@ -65,7 +65,7 @@ jobs:
           rustup update stable && rustup default stable
 
       - name: Configure C consumer tests
-        run: cmake -S cbor-ffi/tests/c-builder -B target/cbor-c-builder-tests
+        run: cmake -S ffi/tests/c-builder -B target/cbor-c-builder-tests
 
       - name: Build C consumer tests
         run: cmake --build target/cbor-c-builder-tests

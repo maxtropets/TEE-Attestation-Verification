@@ -4,7 +4,7 @@
 #pragma once
 
 // RAII wrapper over the CBOR C ABI. This is the supported interface; the ABI
-// in <tav/detail/cbor_abi.h> is an implementation detail.
+// in <tav/internal/cbor_abi.h> is internal to this header.
 //
 // Handle ownership:
 // - Value owns a CBOR value and every child below it, and releases it on
@@ -24,7 +24,7 @@
 // Failures throw CborError: DecodeError from parsing and from reads that do
 // not match the value, EncodeError from construction and serialization.
 
-#include <tav/detail/cbor_abi.h>
+#include <tav/internal/cbor_abi.h>
 
 #include <cstddef>
 #include <cstdint>

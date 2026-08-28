@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::*;
-use crate::ffi::*;
+use super::cbor::*;
 use std::ptr;
 
 /// Serialize a handle, returning the encoded bytes.
@@ -948,7 +947,7 @@ fn header_names(header: &str, prefix: &str) -> std::collections::BTreeSet<String
 
 #[test]
 fn c_header_status_codes_match_rust() {
-    let header = include_str!("../include/tav/detail/cbor_abi.h");
+    let header = include_str!("../../include/tav/internal/cbor_abi.h");
     let mapping = [
         ("TAV_CBOR_OK", STATUS_OK),
         ("TAV_CBOR_DECODE_FAILED", STATUS_DECODE_FAILED),
@@ -978,7 +977,7 @@ fn c_header_status_codes_match_rust() {
 
 #[test]
 fn c_header_kinds_match_rust() {
-    let header = include_str!("../include/tav/detail/cbor_abi.h");
+    let header = include_str!("../../include/tav/internal/cbor_abi.h");
     let mapping = [
         ("TAV_CBOR_HANDLE_KIND_INVALID", KIND_INVALID),
         ("TAV_CBOR_HANDLE_KIND_SIGNED", KIND_SIGNED),
@@ -1007,7 +1006,7 @@ fn c_header_kinds_match_rust() {
 
 #[test]
 fn c_header_publishes_the_depth_ceiling() {
-    let header = include_str!("../include/tav/detail/cbor_abi.h");
+    let header = include_str!("../../include/tav/internal/cbor_abi.h");
     let declared = header.lines().find_map(|line| {
         line.trim()
             .strip_prefix("#define TAV_CBOR_MAX_DEPTH ")
@@ -1022,8 +1021,8 @@ fn c_header_publishes_the_depth_ceiling() {
 
 #[test]
 fn c_header_declares_every_exported_symbol() {
-    let header = include_str!("../include/tav/detail/cbor_abi.h");
-    let source = include_str!("ffi.rs");
+    let header = include_str!("../../include/tav/internal/cbor_abi.h");
+    let source = include_str!("cbor.rs");
 
     let exported: std::collections::BTreeSet<&str> = source
         .lines()
@@ -1040,7 +1039,7 @@ fn c_header_declares_every_exported_symbol() {
     for symbol in exported {
         assert!(
             header.contains(&format!("{symbol}(")),
-            "{symbol} is exported but not declared in include/tav/detail/cbor_abi.h"
+            "{symbol} is exported but not declared in include/tav/internal/cbor_abi.h"
         );
     }
 }

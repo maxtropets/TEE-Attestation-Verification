@@ -782,13 +782,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tee-attestation-verification-cbor-ffi"
-version = "1.0.8"
-dependencies = [
- "tee-attestation-verification-cbor",
-]
-
-[[package]]
 name = "tee-attestation-verification-cose"
 version = "1.0.8"
 dependencies = [
@@ -823,6 +816,7 @@ dependencies = [
  "js-sys",
  "serde_json",
  "tee-attestation-verification-caci",
+ "tee-attestation-verification-cbor",
  "tee-attestation-verification-cose",
  "tee-attestation-verification-crypto",
  "tee-attestation-verification-lib",
