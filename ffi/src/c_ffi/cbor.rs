@@ -10,11 +10,10 @@
 //!
 //! # Handle ownership
 //!
-//! A handle owns one [`CborValue`] and every child below it. Container
-//! constructors consume the handles they are given and null the caller's
-//! variables. Each handle in a batch must be distinct: a repeated handle is
-//! consumed twice and so freed twice. Callers observing this obtain a tree,
-//! which the implementation assumes without validation.
+//! Every handle is independently owned and keeps its complete immutable CBOR
+//! document alive. Navigation returns a new owning handle projected into the
+//! same document. Container constructors consume the handles they are given,
+//! null the caller's variables, and materialize each selected subtree.
 //!
 //! # Payload ownership
 //!
@@ -30,10 +29,13 @@
 //! whatever depth the caller asks for.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use cbor::{CborValue, Det, Mode, Nondet};
+
+use crate::cbor_view::{CborView, NativeCborValue};
 
 /// Success.
 pub const STATUS_OK: i32 = 0;
@@ -63,32 +65,24 @@ pub const KIND_SIMPLE: i32 = 6;
 /// stack.
 pub const MAX_DEPTH_LIMIT: usize = 256;
 
-/// A CBOR value behind a C handle.
-///
-/// Byte and text payloads may point into caller memory, which the caller
-/// guarantees outlives this value.
-#[repr(transparent)]
-pub struct TavCborHandle(pub(crate) CborValue<'static>);
+/// An opaque, independently owned view into an immutable CBOR document.
+pub type TavCborHandle = CborView;
 
 /// Move `value` onto the heap and hand the caller an owning handle.
 pub(crate) fn into_handle(value: CborValue<'static>) -> *mut TavCborHandle {
-    Box::into_raw(Box::new(TavCborHandle(value)))
+    into_view_handle(CborView::from_native(value))
+}
+
+fn into_view_handle(view: CborView) -> *mut TavCborHandle {
+    Box::into_raw(Box::new(view))
 }
 
 /// Read a handle without taking ownership.
 ///
 /// # Safety
 /// `handle` must be null or a live handle.
-pub(crate) unsafe fn as_value<'a>(handle: *const TavCborHandle) -> Option<&'a CborValue<'static>> {
-    unsafe { handle.as_ref() }.map(|h| &h.0)
-}
-
-/// Borrow a child as a handle.
-///
-/// Sound because [`TavCborHandle`] is `repr(transparent)` over [`CborValue`],
-/// so a child's own address serves as its handle.
-pub(crate) fn borrow(value: &CborValue<'static>) -> *const TavCborHandle {
-    (value as *const CborValue<'static>).cast()
+unsafe fn as_handle<'a>(handle: *const TavCborHandle) -> Option<&'a TavCborHandle> {
+    unsafe { handle.as_ref() }
 }
 
 /// View caller memory as a slice that outlives this call.
@@ -119,14 +113,11 @@ pub(crate) unsafe fn take(slot: *mut *mut TavCborHandle) -> Option<CborValue<'st
         return None;
     }
     unsafe { *slot = std::ptr::null_mut() };
-    Some(unsafe { Box::from_raw(handle) }.0)
+    let view = *unsafe { Box::from_raw(handle) };
+    Some(view.into_native())
 }
 
-/// Take ownership of `count` handles, returning those already taken if any
-/// slot is null.
-///
-/// Every slot must hold a distinct handle. A handle appearing twice is taken
-/// twice and so freed twice, which this does not detect.
+/// Take ownership of `count` distinct handles.
 ///
 /// # Safety
 /// `slots` must be valid for `count` handle variables holding distinct
@@ -142,19 +133,22 @@ pub(crate) unsafe fn take_all(
         return None;
     }
 
-    let mut taken = Vec::with_capacity(count);
-    for i in 0..count {
-        match unsafe { take(slots.add(i)) } {
-            Some(value) => taken.push(value),
-            None => {
-                for (j, value) in taken.into_iter().enumerate() {
-                    unsafe { *slots.add(j) = into_handle(value) };
-                }
-                return None;
-            }
+    let slots_slice = unsafe { std::slice::from_raw_parts_mut(slots, count) };
+    let mut distinct = HashSet::with_capacity(count);
+    for &handle in slots_slice.iter() {
+        if handle.is_null() || !distinct.insert(handle) {
+            return None;
         }
     }
-    Some(taken)
+
+    let views = slots_slice
+        .iter_mut()
+        .map(|slot| {
+            let handle = std::mem::replace(slot, std::ptr::null_mut());
+            *unsafe { Box::from_raw(handle) }
+        })
+        .collect::<Vec<_>>();
+    Some(views.into_iter().map(CborView::into_native).collect())
 }
 
 /// Build a byte string that borrows `payload`.
@@ -379,9 +373,10 @@ pub unsafe extern "C" fn tav_cbor_make_map(
         // Checked before anything is consumed, so a rejected batch leaves the
         // caller's handles intact.
         for i in (0..total).step_by(2) {
-            match unsafe { as_value(*pairs.add(i)) } {
-                Some(key) if !usable_as_key(key) => return std::ptr::null_mut(),
-                _ => {}
+            if let Some(key) = unsafe { as_handle(*pairs.add(i)) } {
+                if !usable_as_key(key.as_native()) {
+                    return std::ptr::null_mut();
+                }
             }
         }
         let Some(values) = (unsafe { take_all(pairs, total) }) else {
@@ -423,8 +418,8 @@ pub unsafe extern "C" fn tav_cbor_make_tagged(
 /// `value` must be null or a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn tav_cbor_shallow_copy(value: *const TavCborHandle) -> *mut TavCborHandle {
-    guard_handle(|| match unsafe { as_value(value) } {
-        Some(value) => into_handle(value.clone()),
+    guard_handle(|| match unsafe { as_handle(value) } {
+        Some(value) => into_handle(value.as_native().clone()),
         None => std::ptr::null_mut(),
     })
 }
@@ -438,8 +433,8 @@ pub unsafe extern "C" fn tav_cbor_shallow_copy(value: *const TavCborHandle) -> *
 /// `value` must be null or a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn tav_cbor_deep_copy(value: *const TavCborHandle) -> *mut TavCborHandle {
-    guard_handle(|| match unsafe { as_value(value) } {
-        Some(value) => into_handle(value.clone().into_owned()),
+    guard_handle(|| match unsafe { as_handle(value) } {
+        Some(value) => into_handle(value.as_native().clone().into_owned()),
         None => std::ptr::null_mut(),
     })
 }
@@ -447,8 +442,8 @@ pub unsafe extern "C" fn tav_cbor_deep_copy(value: *const TavCborHandle) -> *mut
 /// Release an owning handle. Freeing null is a no-op.
 ///
 /// # Safety
-/// `value` must come from a constructor or a parse call, and must not have
-/// been released already. Borrowed handles must not be passed here.
+/// `value` must be null or a live handle returned by this API, and must not
+/// have been released already.
 #[no_mangle]
 pub unsafe extern "C" fn tav_cbor_free(value: *mut TavCborHandle) {
     if value.is_null() {
@@ -470,7 +465,7 @@ unsafe fn serialize<M: Mode>(
     unsafe { reset_error(err_ptr, err_len) };
     let out_ok = unsafe { reset_owned_out(out_ptr) };
     let len_ok = unsafe { reset_scalar_out(out_len) };
-    let Some(value) = (unsafe { as_value(value) }) else {
+    let Some(handle) = (unsafe { as_handle(value) }) else {
         unsafe { set_error("Null CBOR handle", err_ptr, err_len) };
         return STATUS_ENCODE_FAILED;
     };
@@ -478,7 +473,10 @@ unsafe fn serialize<M: Mode>(
         unsafe { set_error("Null output pointer", err_ptr, err_len) };
         return STATUS_ENCODE_FAILED;
     }
-    match value.to_bytes_with_depth::<M>(capped(max_depth)) {
+    match handle
+        .as_native()
+        .to_bytes_with_depth::<M>(capped(max_depth))
+    {
         Ok(bytes) => {
             let bytes = bytes.into_boxed_slice();
             let len = bytes.len();
@@ -641,8 +639,8 @@ pub unsafe extern "C" fn tav_cbor_buffer_free(ptr: *mut u8, len: usize) {
 /// `value` must be null or a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn tav_cbor_kind(value: *const TavCborHandle) -> i32 {
-    guard_status(KIND_INVALID, || match unsafe { as_value(value) } {
-        Some(value) => kind_of(value),
+    guard_status(KIND_INVALID, || match unsafe { as_handle(value) } {
+        Some(value) => kind_of(value.as_native()),
         None => KIND_INVALID,
     })
 }
@@ -657,7 +655,7 @@ pub unsafe extern "C" fn tav_cbor_as_signed(value: *const TavCborHandle, out: *m
         if out.is_null() {
             return STATUS_TYPE_MISMATCH;
         }
-        match unsafe { as_value(value) } {
+        match unsafe { as_handle(value) }.map(CborView::as_native) {
             Some(CborValue::Int(v)) => {
                 unsafe { *out = *v };
                 STATUS_OK
@@ -677,7 +675,7 @@ pub unsafe extern "C" fn tav_cbor_as_simple(value: *const TavCborHandle, out: *m
         if out.is_null() {
             return STATUS_TYPE_MISMATCH;
         }
-        match unsafe { as_value(value) } {
+        match unsafe { as_handle(value) }.map(CborView::as_native) {
             Some(CborValue::Simple(v)) => {
                 unsafe { *out = *v };
                 STATUS_OK
@@ -701,7 +699,7 @@ pub unsafe extern "C" fn tav_cbor_as_bytes(
         if out.is_null() || out_len.is_null() {
             return STATUS_TYPE_MISMATCH;
         }
-        match unsafe { as_value(value) } {
+        match unsafe { as_handle(value) }.map(CborView::as_native) {
             Some(CborValue::ByteString(payload)) => {
                 unsafe {
                     *out = payload.as_ptr();
@@ -728,7 +726,7 @@ pub unsafe extern "C" fn tav_cbor_as_string(
         if out.is_null() || out_len.is_null() {
             return STATUS_TYPE_MISMATCH;
         }
-        match unsafe { as_value(value) } {
+        match unsafe { as_handle(value) }.map(CborView::as_native) {
             Some(CborValue::TextString(payload)) => {
                 unsafe {
                     *out = payload.as_ptr().cast();
@@ -751,7 +749,7 @@ pub unsafe extern "C" fn tav_cbor_as_tag(value: *const TavCborHandle, out: *mut 
         if out.is_null() {
             return STATUS_TYPE_MISMATCH;
         }
-        match unsafe { as_value(value) } {
+        match unsafe { as_handle(value) }.map(CborView::as_native) {
             Some(CborValue::Tagged { tag, .. }) => {
                 unsafe { *out = *tag };
                 STATUS_OK
@@ -771,7 +769,7 @@ pub unsafe extern "C" fn tav_cbor_size(value: *const TavCborHandle, out: *mut us
         if out.is_null() {
             return STATUS_TYPE_MISMATCH;
         }
-        let count = match unsafe { as_value(value) } {
+        let count = match unsafe { as_handle(value) }.map(CborView::as_native) {
             Some(CborValue::Array(items)) => items.len(),
             Some(CborValue::Map(entries)) => entries.len(),
             _ => return STATUS_TYPE_MISMATCH,
@@ -783,7 +781,14 @@ pub unsafe extern "C" fn tav_cbor_size(value: *const TavCborHandle, out: *mut us
 
 // --- Navigation ---
 
-/// Borrow an array element by index.
+fn project_handle(
+    handle: &TavCborHandle,
+    project: impl for<'a> FnOnce(&'a NativeCborValue) -> Result<[&'a NativeCborValue; 1], i32>,
+) -> Result<*mut TavCborHandle, i32> {
+    handle.project(project).map(|[view]| into_view_handle(view))
+}
+
+/// Return an independently owned array element by index.
 ///
 /// # Safety
 /// `value` must be null or a live handle, and `out` valid for writing.
@@ -791,26 +796,33 @@ pub unsafe extern "C" fn tav_cbor_size(value: *const TavCborHandle, out: *mut us
 pub unsafe extern "C" fn tav_cbor_array_at(
     value: *const TavCborHandle,
     index: usize,
-    out: *mut *const TavCborHandle,
+    out: *mut *mut TavCborHandle,
 ) -> i32 {
     guard_status(STATUS_TYPE_MISMATCH, || {
         if out.is_null() {
             return STATUS_TYPE_MISMATCH;
         }
-        let Some(CborValue::Array(items)) = (unsafe { as_value(value) }) else {
+        unsafe { *out = std::ptr::null_mut() };
+        let Some(handle) = (unsafe { as_handle(value) }) else {
             return STATUS_TYPE_MISMATCH;
         };
-        match items.get(index) {
-            Some(item) => {
-                unsafe { *out = borrow(item) };
+        match project_handle(handle, |value| match value {
+            CborValue::Array(items) => items
+                .get(index)
+                .map(|item| [item])
+                .ok_or(STATUS_OUT_OF_BOUND),
+            _ => Err(STATUS_TYPE_MISMATCH),
+        }) {
+            Ok(projected) => {
+                unsafe { *out = projected };
                 STATUS_OK
             }
-            None => STATUS_OUT_OF_BOUND,
+            Err(status) => status,
         }
     })
 }
 
-/// Borrow a map value by key.
+/// Return an independently owned map value by key.
 ///
 /// Containers are not usable as keys and are reported as a type mismatch.
 ///
@@ -820,32 +832,41 @@ pub unsafe extern "C" fn tav_cbor_array_at(
 pub unsafe extern "C" fn tav_cbor_map_at(
     value: *const TavCborHandle,
     key: *const TavCborHandle,
-    out: *mut *const TavCborHandle,
+    out: *mut *mut TavCborHandle,
 ) -> i32 {
     guard_status(STATUS_TYPE_MISMATCH, || {
         if out.is_null() {
             return STATUS_TYPE_MISMATCH;
         }
-        let Some(CborValue::Map(entries)) = (unsafe { as_value(value) }) else {
+        unsafe { *out = std::ptr::null_mut() };
+        let Some(handle) = (unsafe { as_handle(value) }) else {
             return STATUS_TYPE_MISMATCH;
         };
-        let Some(key) = (unsafe { as_value(key) }) else {
+        let Some(key) = (unsafe { as_handle(key) }) else {
             return STATUS_TYPE_MISMATCH;
         };
+        let key = key.as_native();
         if !usable_as_key(key) {
             return STATUS_TYPE_MISMATCH;
         }
-        match entries.iter().find(|(k, _)| k == key) {
-            Some((_, found)) => {
-                unsafe { *out = borrow(found) };
+        match project_handle(handle, |value| match value {
+            CborValue::Map(entries) => entries
+                .iter()
+                .find(|(candidate, _)| candidate == key)
+                .map(|(_, found)| [found])
+                .ok_or(STATUS_KEY_NOT_FOUND),
+            _ => Err(STATUS_TYPE_MISMATCH),
+        }) {
+            Ok(projected) => {
+                unsafe { *out = projected };
                 STATUS_OK
             }
-            None => STATUS_KEY_NOT_FOUND,
+            Err(status) => status,
         }
     })
 }
 
-/// Borrow the payload of a tagged value, checking the tag.
+/// Return an independently owned tagged payload, checking the tag.
 ///
 /// # Safety
 /// `value` must be null or a live handle, and `out` valid for writing.
@@ -853,28 +874,34 @@ pub unsafe extern "C" fn tav_cbor_map_at(
 pub unsafe extern "C" fn tav_cbor_tag_at(
     value: *const TavCborHandle,
     tag: u64,
-    out: *mut *const TavCborHandle,
+    out: *mut *mut TavCborHandle,
 ) -> i32 {
     guard_status(STATUS_TYPE_MISMATCH, || {
         if out.is_null() {
             return STATUS_TYPE_MISMATCH;
         }
-        let Some(CborValue::Tagged {
-            tag: actual,
-            payload,
-        }) = (unsafe { as_value(value) })
-        else {
+        unsafe { *out = std::ptr::null_mut() };
+        let Some(handle) = (unsafe { as_handle(value) }) else {
             return STATUS_TYPE_MISMATCH;
         };
-        if *actual != tag {
-            return STATUS_KEY_NOT_FOUND;
+        match project_handle(handle, |value| match value {
+            CborValue::Tagged {
+                tag: actual,
+                payload,
+            } if *actual == tag => Ok([payload]),
+            CborValue::Tagged { .. } => Err(STATUS_KEY_NOT_FOUND),
+            _ => Err(STATUS_TYPE_MISMATCH),
+        }) {
+            Ok(projected) => {
+                unsafe { *out = projected };
+                STATUS_OK
+            }
+            Err(status) => status,
         }
-        unsafe { *out = borrow(payload) };
-        STATUS_OK
     })
 }
 
-/// Borrow a map key by entry index.
+/// Return an independently owned map key by entry index.
 ///
 /// # Safety
 /// `value` must be null or a live handle, and `out` valid for writing.
@@ -882,14 +909,14 @@ pub unsafe extern "C" fn tav_cbor_tag_at(
 pub unsafe extern "C" fn tav_cbor_map_key_at(
     value: *const TavCborHandle,
     index: usize,
-    out: *mut *const TavCborHandle,
+    out: *mut *mut TavCborHandle,
 ) -> i32 {
     guard_status(STATUS_TYPE_MISMATCH, || unsafe {
         cbor_map_entry_at(value, index, out, true)
     })
 }
 
-/// Borrow a map value by entry index.
+/// Return an independently owned map value by entry index.
 ///
 /// # Safety
 /// `value` must be null or a live handle, and `out` valid for writing.
@@ -897,7 +924,7 @@ pub unsafe extern "C" fn tav_cbor_map_key_at(
 pub unsafe extern "C" fn tav_cbor_map_value_at(
     value: *const TavCborHandle,
     index: usize,
-    out: *mut *const TavCborHandle,
+    out: *mut *mut TavCborHandle,
 ) -> i32 {
     guard_status(STATUS_TYPE_MISMATCH, || unsafe {
         cbor_map_entry_at(value, index, out, false)
@@ -907,20 +934,27 @@ pub unsafe extern "C" fn tav_cbor_map_value_at(
 unsafe fn cbor_map_entry_at(
     value: *const TavCborHandle,
     index: usize,
-    out: *mut *const TavCborHandle,
+    out: *mut *mut TavCborHandle,
     want_key: bool,
 ) -> i32 {
     if out.is_null() {
         return STATUS_TYPE_MISMATCH;
     }
-    let Some(CborValue::Map(entries)) = (unsafe { as_value(value) }) else {
+    unsafe { *out = std::ptr::null_mut() };
+    let Some(handle) = (unsafe { as_handle(value) }) else {
         return STATUS_TYPE_MISMATCH;
     };
-    match entries.get(index) {
-        Some((key, item)) => {
-            unsafe { *out = borrow(if want_key { key } else { item }) };
+    match project_handle(handle, |value| match value {
+        CborValue::Map(entries) => entries
+            .get(index)
+            .map(|(key, item)| [if want_key { key } else { item }])
+            .ok_or(STATUS_OUT_OF_BOUND),
+        _ => Err(STATUS_TYPE_MISMATCH),
+    }) {
+        Ok(projected) => {
+            unsafe { *out = projected };
             STATUS_OK
         }
-        None => STATUS_OUT_OF_BOUND,
+        Err(status) => status,
     }
 }
