@@ -55,7 +55,7 @@ jobs:
         run: cargo +nightly miri test --manifest-path ffi/Cargo.toml --no-default-features --features crypto_openssl
 
   c-consumer:
-    name: CBOR C API consumer tests
+    name: CBOR C++ API consumer tests
     runs-on: ubuntu-22.04
 
     steps:
@@ -64,13 +64,13 @@ jobs:
         run: |
           rustup update stable && rustup default stable
 
-      - name: Configure C consumer tests
+      - name: Configure C++ consumer tests
         run: cmake -S ffi/tests/c-builder -B target/cbor-c-builder-tests
 
-      - name: Build C consumer tests
+      - name: Build C++ consumer tests
         run: cmake --build target/cbor-c-builder-tests
 
-      - name: Run C consumer tests
+      - name: Run C++ consumer tests
         run: ctest --test-dir target/cbor-c-builder-tests --output-on-failure
 
   wasm:
