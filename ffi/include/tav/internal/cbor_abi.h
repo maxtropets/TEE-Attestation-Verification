@@ -22,7 +22,8 @@ extern "C" {
  *   tav_cbor_free(NULL) is a no-op.
  * - Container constructors consume every handle passed to them and set each
  *   caller variable to NULL. A batch containing NULL or the same handle more
- *   than once is rejected without consuming any handles.
+ *   than once is rejected without consuming any handles. A map with an invalid
+ *   or duplicate key is also rejected without consuming any handles.
  * - Navigation returns a new owning handle projected into the same immutable
  *   document. It remains valid after the source handle is freed.
  *
@@ -97,7 +98,7 @@ TavCborHandle* tav_cbor_make_string(const char* data, size_t len);
 TavCborHandle* tav_cbor_make_array(TavCborHandle** items, size_t count);
 /*
  * pairs holds key, value, key, value, ... so it has 2 * pair_count entries.
- * Keys must not be arrays, maps or tagged values.
+ * Keys must be unique and must not be arrays, maps or tagged values.
  */
 TavCborHandle* tav_cbor_make_map(TavCborHandle** pairs, size_t pair_count);
 TavCborHandle* tav_cbor_make_tagged(uint64_t tag, TavCborHandle** payload);
@@ -181,7 +182,8 @@ int tav_cbor_size(const TavCborHandle* value, size_t* out);
 /*
  * Navigation. Each writes a new owning handle through out. The output is
  * cleared before any work, and must be released with tav_cbor_free or passed
- * to a consuming container constructor.
+ * to a consuming container constructor. out must point to a null handle slot
+ * separate from every input-handle variable.
  *
  * array_at: TYPE_MISMATCH if not an array, OUT_OF_BOUND past the end.
  * map_at:   TYPE_MISMATCH if not a map or if the key is a container, which a

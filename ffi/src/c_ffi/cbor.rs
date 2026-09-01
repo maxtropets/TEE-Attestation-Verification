@@ -353,8 +353,9 @@ pub unsafe extern "C" fn tav_cbor_make_array(
 
 /// Build a map, consuming `2 * pair_count` handles ordered key, value, key, value.
 ///
-/// Keys must not be arrays, maps or tagged values, matching the lookup
-/// [`tav_cbor_map_at`] offers.
+/// Keys must be unique and must not be arrays, maps or tagged values, matching
+/// the lookup [`tav_cbor_map_at`] offers. Invalid or duplicate keys are rejected
+/// without consuming any handles.
 ///
 /// # Safety
 /// `pairs` must be valid for `2 * pair_count` handle variables.
@@ -370,15 +371,24 @@ pub unsafe extern "C" fn tav_cbor_make_map(
         if total != 0 && pairs.is_null() {
             return std::ptr::null_mut();
         }
-        // Checked before anything is consumed, so a rejected batch leaves the
-        // caller's handles intact.
-        for i in (0..total).step_by(2) {
-            if let Some(key) = unsafe { as_handle(*pairs.add(i)) } {
-                if !usable_as_key(key.as_native()) {
-                    return std::ptr::null_mut();
-                }
+        let pairs_slice = if total == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(pairs, total) }
+        };
+        let mut keys = Vec::with_capacity(pair_count);
+        for pair in pairs_slice.chunks_exact(2) {
+            let Some(key) = (unsafe { as_handle(pair[0]) }) else {
+                return std::ptr::null_mut();
+            };
+            let key = key.as_native();
+            if !usable_as_key(key) || keys.iter().any(|existing| *existing == key) {
+                return std::ptr::null_mut();
             }
+            keys.push(key);
         }
+        drop(keys);
+
         let Some(values) = (unsafe { take_all(pairs, total) }) else {
             return std::ptr::null_mut();
         };
@@ -791,7 +801,8 @@ fn project_handle(
 /// Return an independently owned array element by index.
 ///
 /// # Safety
-/// `value` must be null or a live handle, and `out` valid for writing.
+/// `value` must be null or a live handle. `out` must point to a null handle
+/// slot and must not alias a slot that holds `value`.
 #[no_mangle]
 pub unsafe extern "C" fn tav_cbor_array_at(
     value: *const TavCborHandle,
@@ -827,7 +838,8 @@ pub unsafe extern "C" fn tav_cbor_array_at(
 /// Containers are not usable as keys and are reported as a type mismatch.
 ///
 /// # Safety
-/// `value` and `key` must be null or live handles, and `out` valid for writing.
+/// `value` and `key` must be null or live handles. `out` must point to a null
+/// handle slot and must not alias a slot that holds either input handle.
 #[no_mangle]
 pub unsafe extern "C" fn tav_cbor_map_at(
     value: *const TavCborHandle,
@@ -869,7 +881,8 @@ pub unsafe extern "C" fn tav_cbor_map_at(
 /// Return an independently owned tagged payload, checking the tag.
 ///
 /// # Safety
-/// `value` must be null or a live handle, and `out` valid for writing.
+/// `value` must be null or a live handle. `out` must point to a null handle
+/// slot and must not alias a slot that holds `value`.
 #[no_mangle]
 pub unsafe extern "C" fn tav_cbor_tag_at(
     value: *const TavCborHandle,
@@ -904,7 +917,8 @@ pub unsafe extern "C" fn tav_cbor_tag_at(
 /// Return an independently owned map key by entry index.
 ///
 /// # Safety
-/// `value` must be null or a live handle, and `out` valid for writing.
+/// `value` must be null or a live handle. `out` must point to a null handle
+/// slot and must not alias a slot that holds `value`.
 #[no_mangle]
 pub unsafe extern "C" fn tav_cbor_map_key_at(
     value: *const TavCborHandle,
@@ -919,7 +933,8 @@ pub unsafe extern "C" fn tav_cbor_map_key_at(
 /// Return an independently owned map value by entry index.
 ///
 /// # Safety
-/// `value` must be null or a live handle, and `out` valid for writing.
+/// `value` must be null or a live handle. `out` must point to a null handle
+/// slot and must not alias a slot that holds `value`.
 #[no_mangle]
 pub unsafe extern "C" fn tav_cbor_map_value_at(
     value: *const TavCborHandle,

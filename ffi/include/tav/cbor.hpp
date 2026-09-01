@@ -465,8 +465,8 @@ inline Value make_array(std::vector<Value>&& items)
     return Value::adopt(tav_cbor_make_array(batch.data(), batch.size()), "make_array");
 }
 
-/// Keys must not be arrays, maps or tagged values, so that every key a map
-/// holds can also be passed to map_at.
+/// Keys must be unique and must not be arrays, maps or tagged values, so that
+/// every key a map holds can also be passed to map_at.
 inline Value make_map(std::vector<MapItem>&& entries)
 {
     const size_t pair_count = entries.size();
